@@ -26,6 +26,17 @@ const APP_VERSION = (() => {
 })();
 /** 本仓地址：面板「检查更新」据此对比最新 tag，也用于"把这套部署到你自己的服务器"入口。 */
 const REPO_URL = String(process.env.HARNESS_REPO_URL || "https://github.com/PMZPZM0/codex-cloud-assistant").replace(/\/+$/, "");
+/** 更新检查的源（用户令「**默认走国内镜像**更新」）：国内镜像优先，直连最后兜底。
+ *  ⛔ 用镜像的 raw 透传（`<mirror>https://raw.githubusercontent.com/...`）——
+ *     raw 不计 GitHub API 配额（匿名 API 60/h/IP，超了就是 403，很容易被误读成"被墙"）。 */
+const UPDATE_MIRRORS = [
+  { name: "ghfast（国内）", prefix: "https://ghfast.top/" },
+  { name: "gh-proxy（国内）", prefix: "https://gh-proxy.com/" },
+  { name: "ghproxy.net（国内）", prefix: "https://ghproxy.net/" },
+  { name: "gitmirror（国内）", prefix: "https://hub.gitmirror.com/" },
+  { name: "moeyy（国内）", prefix: "https://github.moeyy.xyz/" },
+  { name: "直连（兜底）", prefix: "" },
+];
 const DATA_FILE = process.env.HARNESS_ACCOUNTS_FILE || path.join(__dirname, "data.json");
 /* ── 配额（单一真相源；界面文案从 /sync/usage 与 /device/list 读，别在前端再写一份） ── */
 const DEVICE_LIMIT = Number(process.env.HARNESS_DEVICE_LIMIT || 3);                       // 每账号最多绑定机器数
@@ -930,9 +941,31 @@ const server = http.createServer(async (req, res) => {
       name: "codex-cloud-assistant",
       version: APP_VERSION,
       repo: REPO_URL,
+      deployRepo: REPO_URL,
       uptimeSec: Math.round(process.uptime()),
       node: process.version,
     });
+  }
+  /* ── 检查更新（国内镜像优先）─────────────────────────────────────────────
+     ⛔ 不在浏览器里查 GitHub（匿名 API 60/h/IP，超了 403；国内还常连不上）。
+     服务端按「国内镜像 → 直连」顺序读 raw 的 VERSION（不占 API 配额）。 */
+  if (p === "/api/updates" && req.method === "GET") {
+    const rawUrl = REPO_URL.replace("https://github.com/", "https://raw.githubusercontent.com/") + "/main/VERSION";
+    const tried = [];
+    for (const m of UPDATE_MIRRORS) {
+      const url = m.prefix + rawUrl;
+      const t0 = Date.now();
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(6000), headers: { "Cache-Control": "no-cache" } });
+        const text = r.ok ? (await r.text()).trim() : "";
+        const latest = (text.match(/^v?\d+\.\d+\.\d+/) || [])[0] || "";
+        tried.push({ name: m.name, ok: Boolean(latest), status: r.status, ms: Date.now() - t0, error: latest ? "" : explainProbeStatus(r.status) });
+        if (latest) return send(200, { ok: true, current: APP_VERSION, latest, source: m.name, tried, repo: REPO_URL });
+      } catch (error) {
+        tried.push({ name: m.name, ok: false, status: 0, ms: Date.now() - t0, error: classifyFetchError(error) });
+      }
+    }
+    return send(200, { ok: false, current: APP_VERSION, tried, repo: REPO_URL, message: "所有源都失败（含国内镜像）—— 直接打开仓库页看最新 tag" });
   }
   const readBody = () => new Promise((resolve, reject) => {
     let raw = ""; req.on("data", (c) => { raw += c; if (raw.length > 64 * 1024) { reject(new Error("too-large")); req.destroy(); } });
