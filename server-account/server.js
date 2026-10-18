@@ -919,7 +919,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(204, cors).end(); return; }
   const url = new URL(req.url, "http://127.0.0.1");
   const p = url.pathname.replace(/\/+$/, "") || "/";
+  const send = (status, body) => { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...cors }); res.end(JSON.stringify(body)); };
   /* ── 版本与更新（10-18 用户令）────────────────────────────────────────────
+     ⛔⛔ 必须放在 `send` 之后 —— 放前面会踩 const TDZ，handler 抛错、连接被断，curl 只看到空响应。
      ⛔ **公开**端点（无需鉴权）：面板、运维脚本、监控都要能读到当前版本。
      ⛔ 只回版本与仓地址，**不回**任何配置/密钥/路径。 */
   if (p === "/api/version" && req.method === "GET") {
@@ -932,7 +934,6 @@ const server = http.createServer(async (req, res) => {
       node: process.version,
     });
   }
-  const send = (status, body) => { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...cors }); res.end(JSON.stringify(body)); };
   const readBody = () => new Promise((resolve, reject) => {
     let raw = ""; req.on("data", (c) => { raw += c; if (raw.length > 64 * 1024) { reject(new Error("too-large")); req.destroy(); } });
     req.on("end", () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(new Error("bad-json")); } });
