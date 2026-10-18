@@ -1,0 +1,2684 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>控制台 · Codex Assistant</title>
+<!-- ⛔ 自足页：只依赖本文件与 /cloud-api/*、本机 127.0.0.1（探测助手）—— 云端原样托管即可用。
+     三个中心（用户 / 配对 / 云端）共用一套设计令牌与组件，手机端（<=760px）切为顶部标签 + 单列。 -->
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #fff; --field: #fafaf8; --line: #e6e6e1; --line-soft: #efefeb;
+    --text: #22221f; --muted: #6a6a64; --faint: #9a9a93;
+    --brand: #7c3aed; --brand2: #a78bfa; --brand-soft: #f1ebfe; --brand-ink: #4c1d95;
+    --ok: #1a7f37; --ok-soft: #e8f5ec; --warn: #b45309; --warn-soft: #fef3e2; --bad: #c0392b; --bad-soft: #fdecea;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.04);
+    --r: 12px; --dur: .18s;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.65 Inter, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  a { color: var(--brand); text-decoration: none; cursor: pointer; }
+  a:hover { text-decoration: underline; }
+  button { appearance: none; -webkit-appearance: none; font: inherit; cursor: pointer; }
+
+  /* ── 布局：桌面左导航 + 单列内容；移动端顶部标签 ─────────────────────── */
+  .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+  .side { background: var(--card); border-right: 1px solid var(--line); padding: 20px 14px; display: flex; flex-direction: column; gap: 6px; position: sticky; top: 0; height: 100vh; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; font-weight: 700; font-size: 15px; }
+  .mark { width: 28px; height: 28px; border-radius: 9px; background: linear-gradient(135deg, var(--brand2), var(--brand)); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 12.5px; font-weight: 700; flex: none; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; color: var(--text); font-size: 13.5px; font-weight: 500; border: 0; background: transparent; width: 100%; text-align: left; }
+  .nav-item:hover { background: var(--field); text-decoration: none; }
+  .nav-item.on { background: var(--brand-soft); color: var(--brand-ink); font-weight: 600; }
+  /* ⛔ 有了这条，hidden 属性才真的隐藏 —— 否则 .nav-item 的 display:flex（作者样式）
+     会盖掉 UA 对 [hidden] 的 display:none ⇒ 非管理员照样看到「用户管理」（用户实测）。 */
+  .nav-item[hidden] { display: none !important; }
+  .nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .45; flex: none; }
+  .side-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line-soft); font-size: 12.5px; color: var(--muted); display: flex; flex-direction: column; gap: 8px; }
+  .side-foot b { color: var(--text); font-weight: 600; }
+
+  .main { padding: 28px 32px 64px; max-width: none; width: 100%; }
+  .page-head { margin-bottom: 18px; }
+  .page-head h1 { margin: 0 0 4px; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+  .page-head p { margin: 0; color: var(--muted); font-size: 13px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); padding: 20px 22px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 14px; font-size: 14px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  .card h2 .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--brand-soft); color: var(--brand-ink); }
+  /* 表头里的「?」：鼠标悬停显示口径说明（时段/语义），⛔ 不写死文案，title 由 JS 按当前配置填。 */
+  .qm { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 4px; border-radius: 50%; border: 1px solid var(--line); color: var(--muted); font-size: 10px; font-weight: 700; line-height: 1; cursor: help; vertical-align: 1px; }
+  .qm:hover { border-color: var(--brand); color: var(--brand-ink); }
+  /* 闲时选项行（10-18 用户令：不单独一张卡片，精简进「模型管理」标题行）——
+     ⛔ 只做排版，不写死色值（全部走主题变量，亮/暗自动跟随）。 */
+  .op-inline { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12.5px; font-weight: 400; color: var(--muted); }
+  .op-inline .op-label { display: inline-flex; align-items: center; font-weight: 600; color: var(--text); }
+  .op-inline .op-toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  .op-inline .op-summary { font-size: 12px; }
+  .hint { color: var(--faint); font-size: 12.5px; }
+
+  .kv { display: grid; grid-template-columns: 92px 1fr; gap: 9px 16px; font-size: 13.5px; }
+  .kv .k { color: var(--muted); }
+  .kv .v b { font-weight: 600; }
+
+  .row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line-soft); font-size: 13.5px; flex-wrap: wrap; }
+  .row:first-of-type { border-top: 0; }
+  .row .name { font-weight: 600; }
+  .row .meta { color: var(--faint); font-size: 12px; }
+  .row .grow { flex: 1; }
+  /* ⛔ 必须 nowrap：胶囊是"一个整体标签"，断行后 "管理员" 会变成 "管理/员"（用户 10-16 截图圈出）。
+     inline-block 让 padding 在单元格里按整体盒参与布局，⛔ 不要改成 flex（会让相邻胶囊挤成一条）。 */
+  .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px; font-weight: 600; white-space: nowrap; display: inline-block; line-height: 1.5; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .pill.plain { background: var(--field); color: var(--muted); }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .stat { background: var(--field); border: 1px solid var(--line-soft); border-radius: 10px; padding: 12px 14px; }
+  .stat .n { font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+  .stat .l { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 8px 16px; white-space: nowrap;
+    border-radius: 10px; border: 1px solid var(--line); background: #fff; color: var(--text); font-size: 13.5px; font-weight: 550;
+    transition: filter var(--dur) ease, transform var(--dur) ease, background var(--dur) ease; }
+  .btn:hover:not(:disabled) { background: var(--field); }
+  .btn:active:not(:disabled) { transform: translateY(1px); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: linear-gradient(135deg, var(--brand2), var(--brand)); border-color: transparent; color: #fff; font-weight: 600; }
+  /* ⛔ 主按钮悬停必须自带背景：`.btn:hover:not(:disabled)` 的特异性高于 `.btn.primary`，
+     只写 filter 的话背景会被那条通用 hover 刷成浅色，而文字仍是 #fff ⇒ 白底白字=整块空白（10-16 用户实测）。 */
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: linear-gradient(135deg, var(--brand2), var(--brand)); }
+  .btn.danger { color: var(--bad); border-color: #f0d5d1; }
+  .btn.danger:hover:not(:disabled) { background: var(--bad-soft); }
+  .btn.block { width: 100%; }
+  .btn.sm { min-height: 32px; padding: 5px 12px; font-size: 12.5px; }
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+
+  .field { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--field); font: inherit; font-size: 13.5px; color: var(--text); }
+  .field:focus { outline: 2px solid var(--brand2); outline-offset: 1px; }
+  .field-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .field-row .field { flex: 1; min-width: 170px; }
+  .code-input { font-family: ui-monospace, Consolas, monospace; letter-spacing: .22em; text-align: center; font-size: 18px; font-weight: 700; }
+
+  .status { font-size: 12.5px; color: var(--muted); min-height: 18px; }
+  .status.ok { color: var(--ok); } .status.bad { color: var(--bad); } .status.warn { color: var(--warn); }
+  .empty { color: var(--faint); font-size: 13px; padding: 6px 0; }
+  .todo { background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.7; }
+  .bar { height: 8px; border-radius: 999px; background: var(--field); border: 1px solid var(--line-soft); overflow: hidden; margin-top: 8px; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--brand2), var(--brand)); }
+  .bar.warn > i { background: linear-gradient(90deg, #f0b357, var(--warn)); }
+  .bar.bad > i { background: linear-gradient(90deg, #e57a6d, var(--bad)); }
+  /* 行布局：左侧信息自适应，删除按钮贴右（10-15 用户令：删除放到行尾） */
+  .sess { border-top: 1px solid var(--line-soft); padding: 11px 0; display: flex; align-items: center; gap: 12px; }
+  .sess:first-of-type { border-top: 0; }
+  .sess-body { flex: 1; min-width: 0; }
+  .sess > .btn { flex: none; }
+  /* 工具条：搜索（含清空按钮）/ 分类 / 排序 / 每页 / 翻页，间距走 4 的倍数 */
+  .sess-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 10px; }
+  .sess-tools .field { padding: 7px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--field); font: inherit; font-size: 12.5px; color: var(--text); }
+  /* 搜索框固定宽度（不许 flex:1 撑满，否则后面的控件被挤到下一行） */
+  .sess-search { position: relative; flex: 0 1 260px; min-width: 180px; display: flex; }
+  .sess-search .field { width: 100%; padding-right: 32px; }
+  /* ⛔ 工具栏里的下拉框必须覆盖 .field 的 width:100%（否则每个都撑满整行 ⇒ 一层一个控件） */
+  .sess-tools > select, .sess-tools > select.field { flex: none; width: auto; min-width: 118px; }
+  .sess-search .field { width: 100%; }
+  .sess-x { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 3px 7px; border-radius: 5px; }
+  .sess-x:hover { background: var(--line-soft); color: var(--text); }
+  .sess-pager { display: inline-flex; gap: 8px; align-items: center; margin-left: auto; }
+  .sess-batch { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
+  .sess-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .sess-cb { width: 16px; height: 16px; flex: none; margin: 0; accent-color: var(--brand); }
+  .sess .t { font-weight: 600; font-size: 13.5px; word-break: break-all; }
+  .sess .m { color: var(--faint); font-size: 12px; margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .sess .m code { font-family: ui-monospace, Consolas, monospace; background: var(--field); padding: 0 5px; border-radius: 5px; }
+  .check { display: flex; align-items: center; gap: 9px; padding: 7px 0; font-size: 13.5px; }
+  .check input { width: 16px; height: 16px; accent-color: var(--brand); }
+  .check .hint { margin-left: auto; }
+
+  @media (max-width: 760px) {
+    .shell { grid-template-columns: 1fr; }
+    .side { position: static; height: auto; flex-direction: row; align-items: center; gap: 8px; overflow-x: auto; padding: 12px 12px 10px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .brand { padding: 0 10px 0 4px; flex: none; }
+    .nav-item { width: auto; white-space: nowrap; padding: 8px 12px; }
+    .side-foot { margin: 0; padding: 0 0 0 10px; border-top: 0; border-left: 1px solid var(--line-soft); flex-direction: row; align-items: center; gap: 12px; }
+    .main { padding: 18px 16px 56px; }
+    .kv { grid-template-columns: 76px 1fr; }
+    .grid2 { grid-template-columns: 1fr; }
+    .row { align-items: flex-start; }
+  }
+
+  .pt-ops { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; flex-wrap: nowrap; }
+  .pt-ops .field { flex: 1 1 auto; min-width: 200px; max-width: 420px; }
+  .pt-ops .btn { flex: none; }
+  .pt-rows .row { min-height: 40px; border-bottom: 1px solid var(--line-soft); }
+  .pt-rows .row:last-child { border-bottom: 0; }
+  .pt-rows .row:hover { background: var(--field); }
+  
+  /* 记忆空间 / 知识库 是全屏型第三方应用：放开内容区 max-width，否则右侧被裁 */
+  /* 记忆空间 / 知识库已换成自制轻页（不再是 iframe）⇒ 不再需要放宽 max-width */
+  /* 我的权益：一行一项（左标题+说明，右按钮/状态） */
+  .ent-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.18)); }
+  .ent-row:last-of-type { border-bottom: 0; }
+  /* 知识库检索结果片段 */
+  .kb-hit { padding: 10px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.18)); line-height: 1.6; }
+  .kb-hit:last-of-type { border-bottom: 0; }
+  /* ── 表格（10-16：原先一条样式都没有，全靠浏览器默认 ⇒ 又挤又不齐。用户指定**全部居中**）── */
+  .table-wrap { width: 100%; overflow-x: auto; }
+  .table-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table-wrap th, .table-wrap td { padding: 10px 12px; text-align: center; vertical-align: middle; border-bottom: 1px solid var(--line); }
+  .table-wrap thead th { font-weight: 500; font-size: 12px; color: var(--muted); white-space: nowrap; background: rgba(127,127,127,.06); }
+  .table-wrap tbody tr:hover { background: rgba(127,127,127,.05); }
+  .table-wrap tbody tr:last-child td { border-bottom: 0; }
+  /* 表格里的数字用等宽、右对齐会与"全部居中"冲突 ⇒ 统一居中但保持等宽数字 */
+  .table-wrap td { font-variant-numeric: tabular-nums; }
+  /* 单元格里的控件/按钮组同样居中 */
+  .table-wrap .ent-cell { align-items: center; text-align: center; }
+  .table-wrap .ent-cell .ops { justify-content: center; }
+  /* 单元格里的行内控件组（如「配额输入 + 保存」「停用/重置/删除」）**整体**居中；
+     ⛔ 别给组里的输入框加 margin:auto —— 在 flex 行里会让它自己偏移，整格看起来是歪的（10-16 用户报）。 */
+  .table-wrap td > div { justify-content: center; align-items: center; }
+  .table-wrap td .field { width: 104px; max-width: 40%; margin: 0; text-align: center; }
+  .table-wrap td .btn { white-space: nowrap; }
+  /* 管理卡内的分区标题（一张卡三段：用户 / 权益 / 积分），用分隔线而非新卡片，减少视觉碎片 */
+  .card h3.sub { font-size: 14px; font-weight: 600; margin: 22px 0 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .card h3.sub:first-of-type { margin-top: 8px; padding-top: 0; border-top: 0; }
+  /* 权益单元格：状态徽标**可点** → 详情/操作弹窗；不再在表格里堆按钮（10-16 用户：按钮老气、改额度看不懂） */
+  .ent-pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 999px;
+    padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: filter .15s ease, box-shadow .15s ease; }
+  .ent-pill.on { background: linear-gradient(135deg, var(--brand2), var(--brand)); color: #fff; }
+  .ent-pill.off { background: rgba(127,127,127,.12); color: var(--muted); border-color: var(--line); }
+  .ent-pill:hover { filter: brightness(1.06); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  .ent-pill::after { content: "›"; font-size: 14px; opacity: .7; line-height: 1; }
+  .ent-cell .meta { margin-top: 6px; }
+  /* 批量操作栏 */
+  .bulk-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--line);
+    border-radius: 10px; background: rgba(127,127,127,.05); margin-bottom: 12px; }
+  .bulk-bar .field { width: auto; min-width: 96px; margin: 0; }
+  .table-wrap td.adm-cb { width: 40px; }
+  .table-wrap .btn-row { justify-content: center; margin-top: 0; }
+  /* 权益表格单元格：状态行 → 元信息行 → 操作行（同容器内边距一致、按钮同高、数字等宽） */
+  .ent-cell { display: flex; flex-direction: column; gap: 8px; min-width: 240px; }
+  .ent-cell .meta { color: var(--muted); font-size: 12px; line-height: 1.7; font-variant-numeric: tabular-nums; }
+  /* ⛔ white-space:nowrap 只加在**行**上，不加在 .meta 上 —— 加在容器上会把整块压成一行。
+     数字与单位（0 / 1024 MB）必须整体不可断，否则窄列里会出现 "0 /" 换行 + "1024 MB"。 */
+  .ent-cell .meta .meta-line { display: block; white-space: nowrap; }
+  .ent-cell .ops { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ent-cell .ops .btn { min-height: 32px; min-width: 64px; }
+  /* 示例数据横幅（记忆页预览用；接入真实数据后应移除） */
+  .demo-banner { background: #fff7e6; border: 1px solid #ffe0a3; color: #8a5a00; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><span class="mark">CA</span><span>Codex Assistant</span></div>
+    <button class="nav-item" data-tab="user"><span class="dot"></span>用户中心</button>
+    <button class="nav-item" data-tab="pair"><span class="dot"></span>配对中心</button>
+    <button class="nav-item" data-tab="cloud"><span class="dot"></span>云端管理</button>
+    <button class="nav-item" data-tab="memory"><span class="dot"></span>记忆空间</button>
+    <button class="nav-item" data-tab="kb"><span class="dot"></span>知识库</button>
+    <button class="nav-item" data-tab="admin" id="navAdmin" hidden><span class="dot"></span>用户管理</button>
+    <div class="side-foot">
+      <span id="whoami">读取中…</span>
+      <span id="sidePoints" class="hint">积分 —</span>
+      <a id="logout">退出登录</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- ── 用户中心 ─────────────────────────────────────────────── -->
+    <section class="tab" data-tab="user" hidden>
+      <div class="page-head"><h1>用户中心</h1><p>你的账号资料与此账号下的操作。</p></div>
+      <div class="card">
+        <h2>账号资料</h2>
+        <div class="kv" id="profile"><div class="k">状态</div><div>读取中…</div></div>
+      </div>
+      <div class="card">
+        <h2>我的积分 <span class="tag" id="ptTag">读取中…</span></h2>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px">
+          <span id="ptBalance" style="font-size:30px;font-weight:700;letter-spacing:-.02em">—</span>
+          <span class="hint">积分</span>
+        </div>
+        <div class="hint" id="ptMeta">正在读取…</div>
+        <div class="hint" style="margin-top:8px">
+          用途：在「限时福利」里调用模型时按**模型倍率**扣减（倍率见云端管理的模型列表）。
+          消耗数值取自上游回执，与 WorkBuddy Manager 记账一致。
+        </div>
+        <div style="margin-top:12px">
+          <div class="hint" style="margin-bottom:6px">最近变动</div>
+          <div id="ptList"><div class="empty">读取中…</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>我的权益 <span class="tag" id="entTag">读取中…</span></h2>
+        <div id="entList"><div class="empty">读取中…</div></div>
+        <div class="hint" style="margin-top:8px">
+          知识库：让 Codex 直接检索你上传的资料。记忆：让对话自动记住要点。
+          两项都按「时长 + 额度」开通，到期或用完即停，可随时续期。
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>账号操作</h2>
+        <div class="field-row"><input class="field" id="pwOld" type="password" placeholder="当前密码" autocomplete="current-password" /></div>
+        <div class="field-row"><input class="field" id="pwNew" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password" /></div>
+        <div class="field-row"><input class="field" id="pwNew2" type="password" placeholder="再输一次新密码" autocomplete="new-password" /></div>
+        <div class="btn-row"><button class="btn primary" id="pwSave">修改密码</button><button class="btn danger" id="logout2">退出登录</button></div>
+        <div class="status" id="pwStatus"></div>
+      </div>
+    </section>
+
+    <!-- ── 配对中心 ─────────────────────────────────────────────── -->
+    <section class="tab" data-tab="pair" hidden>
+      <div class="page-head"><h1>配对中心</h1><p>把这台电脑绑到账号，或解除不再使用的设备。</p></div>
+
+      <div class="card">
+        <h2>本机助手 <span class="tag" id="agentPill">探测中…</span></h2>
+        <div class="kv" id="agentInfo"><div class="k">状态</div><div>正在探测本机助手…</div></div>
+        <div class="btn-row">
+          <button class="btn" id="agentRetry">重新检测</button>
+          <button class="btn" id="agentOpen">打开助手授权页</button>
+        </div>
+        <div class="hint" style="margin-top:8px">助手只监听本机 127.0.0.1，必须在<b>这台电脑</b>上运行；浏览器若拦截本地请求请放行。</div>
+      </div>
+
+      <div class="card">
+        <h2>用配对码绑定</h2>
+        <div class="field-row">
+          <input class="field code-input" id="pairCode" maxlength="8" placeholder="8 位十六进制" autocomplete="off" spellcheck="false" />
+          <button class="btn" id="pairPaste">粘贴</button>
+        </div>
+        <div class="btn-row"><button class="btn primary" id="pairClaim">把这台电脑绑定到当前账号</button></div>
+        <div class="status" id="pairStatus"></div>
+      </div>
+
+      <div class="card">
+        <h2>已配对设备 <span class="tag" id="devQuota">—</span></h2>
+        <div id="devices"><div class="empty">读取中…</div></div>
+      </div>
+    </section>
+
+    <!-- ── 云端管理 ─────────────────────────────────────────────── -->
+    <section class="tab" data-tab="cloud" hidden>
+      <div class="page-head"><h1>云端管理</h1><p>云端数据概览、同步配置与数据处置。</p></div>
+
+
+      <div class="card">
+        <h2>概览</h2>
+        <div class="grid2">
+          <div class="stat"><div class="n" id="stDevices">—</div><div class="l">已配对设备</div></div>
+          <div class="stat"><div class="n" id="stSessions">—</div><div class="l">云端会话</div></div>
+          <div class="stat"><div class="n" id="stProjects">—</div><div class="l">云端项目</div></div>
+          <div class="stat"><div class="n" id="stLastSync">—</div><div class="l">最近同步</div></div>
+        </div>
+        <div class="todo" style="margin-top:12px">
+          <b>会话同步已开启</b>（P0）：本机按行增量上传，两台机器各自追加不冲突。
+          项目 / 记忆 / 技能 / 设置同步与「冲突解决 UI」按 <b>CLOUD-SYNC-DESIGN.md</b> 的 P1–P4 推进。
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>同步范围 <span class="tag">待开启</span></h2>
+        <label class="check"><input type="checkbox" checked disabled />会话正文<span class="hint">按行增量，两机各自追加不冲突</span></label>
+        <label class="check"><input type="checkbox" checked disabled />会话元数据<span class="hint">标题 / 时间 / 收藏</span></label>
+        <label class="check"><input type="checkbox" checked disabled />项目覆盖项<span class="hint">显示名 / 分组 / 颜色</span></label>
+        <label class="check"><input type="checkbox" disabled />项目记忆<span class="hint">条目级并集</span></label>
+        <label class="check"><input type="checkbox" disabled />技能与自定义命令</label>
+        <label class="check"><input type="checkbox" disabled />设置白名单<span class="hint">不含任何密钥</span></label>
+        <div class="hint" style="margin-top:8px">⛔ 凭据、沙箱策略、exec 策略在任何档位下都不会上传。</div>
+      </div>
+
+      <div class="card">
+        <h2>存储用量 <span class="tag" id="quotaTag">—</span></h2>
+        <div id="usageBar"><div class="bar"><i style="width:0"></i></div></div>
+        <div class="hint" id="usageText" style="margin-top:8px">读取中…</div>
+        <div class="hint" style="margin-top:6px">每账号上限 <b>1 GB</b>；达上限后**停止上传新会话**（本机照常记录），直到在下方删除数据或扩容。</div>
+        <div class="btn-row">
+          <button class="btn primary" id="syncNow">立即上传（本机 → 云端）</button>
+          <button class="btn" id="syncPull">从云端下载到本机</button>
+          <span class="status" id="syncStatus"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>已上传会话 <span class="tag" id="sessCount">0</span></h2>
+        <div class="sess-tools">
+          <span class="sess-search" title="可搜索：会话 ID / 项目名 / 机器名">
+            <input class="field" id="sessQ" placeholder="搜索…" />
+            <button class="sess-x" id="sessQClear" type="button" title="清空搜索" aria-label="清空搜索">×</button>
+          </span>
+          <select class="field" id="sessProj" aria-label="按项目分类"><option value="">全部分类（项目）</option></select>
+          <select class="field" id="sessSort" aria-label="排序方式">
+            <option value="time">最近上传</option>
+            <option value="size">体积最大</option>
+            <option value="lines">行数最多</option>
+          </select>
+          <select class="field" id="sessPer" aria-label="每页条数">
+            <option value="10">每页 10</option>
+            <option value="20">每页 20</option>
+            <option value="50">每页 50</option>
+          </select>
+          <span class="sess-pager" id="sessPager"></span>
+        </div>
+        <div class="sess-batch" id="sessBatch" hidden>
+          <label class="sess-check"><input type="checkbox" id="sessAll" /> 全选本页</label>
+          <span class="hint" id="sessSelInfo">已选 0 条</span>
+          <button class="btn sm danger" id="sessDelSel" disabled>删除选中</button>
+        </div>
+        <div id="sessList"><div class="empty">读取中…</div></div>
+        <div class="hint" style="margin-top:8px">按项目批量删除：<span id="projDel"></span></div>
+      </div>
+
+      <div class="card">
+        <h2>限时福利 <span class="tag" id="lbState">读取中…</span></h2>
+        <div class="hint" id="lbMeta" style="margin-bottom:10px">内置供应商：登录即可用，无需自己配置密钥。</div>
+        <div class="field-row">
+          <input class="field" id="lbSearch" placeholder="搜索模型…" autocomplete="off" />
+          <button class="btn sm" id="lbAll">全选</button>
+          <button class="btn sm" id="lbNone">清空</button>
+          <button class="btn sm" id="lbReload">刷新</button>
+        </div>
+        <div id="lbList"><div class="empty">读取中…</div></div>
+        <div class="btn-row"><span class="status" id="lbStatus"></span></div>
+        <div class="hint" style="margin-top:8px">
+          勾选即生效，改动自动保存到账号（换台电脑登录也是同一份选择）。
+          ⛔ 未勾选的模型即使被直接调用也会被服务端拒绝。
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>危险区</h2>
+        <div class="btn-row">
+          <button class="btn danger" id="cloudWipe" disabled>清空云端数据（未开放）</button>
+        </div>
+        <div class="hint" style="margin-top:8px">云端数据处置（清空 / 导出 / 回收站）随后端同步服务一并开放。</div>
+      </div>
+    </section>
+  
+  <section class="tab" data-tab="memory" hidden>
+    <div class="page-head"><h1>记忆空间</h1>
+      <p>让对话自动记住要点。管理员授权后解锁；未开通时下方是锁态。</p>
+    </div>
+    <div id="memTab"><div class="empty">读取中…</div></div>
+  </section>
+
+  <section class="tab" data-tab="kb" hidden>
+    <div class="page-head"><h1>知识库</h1>
+      <p>上传你自己的资料，Codex 会在回答时直接检索到它。管理员授权后解锁。</p>
+    </div>
+    <div id="kbTab"><div class="empty">读取中…</div></div>
+  </section>
+
+<div class="tab" data-tab="admin" id="adminTab" hidden>
+    <div class="card">
+      <h2>上游 API <span class="pill ok">热生效</span></h2>
+      <p class="hint" id="auInfo">读取中…</p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <label style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:4px">
+          <span class="hint">上游 API 地址（https:// · http:// · 裸主机皆可；可带端口与路径前缀）</span>
+          <input class="field" id="auBase" spellcheck="false" style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit" />
+        </label>
+        <label style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:4px">
+          <span class="hint">网关密钥（已保存则留空不改）</span>
+          <input class="field" id="auKey" type="password" spellcheck="false" style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit" />
+        </label>
+        <button class="btn" id="auSave" style="height:38px">保存（热生效）</button>
+        <button class="btn" id="auTest" style="height:38px">测试连通性</button>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <label style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:4px">
+          <span class="hint">目录同步地址（可选：留空 = 与上游同址；「重新同步目录」走这里）</span>
+          <input class="field" id="auCatalogBase" spellcheck="false" placeholder="留空 = 用上面的地址"
+                 style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit" />
+        </label>
+      </div>
+      <!-- 连通性测试结果（10-18）：逐端点列出状态码/耗时/原因，管理员不必去翻服务器日志 -->
+      <div id="auTestResult" style="display:none;margin-bottom:10px"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <span class="hint" id="auDiskInfo" style="flex:1">服务器磁盘余量读取中…</span>
+        <button class="btn" id="auDiskRefresh" style="font-size:12px">刷新</button>
+      </div>
+      <div style="height:8px;border-radius:6px;background:var(--line);overflow:hidden;margin:8px 0 4px">
+        <div id="auDiskBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--ok),var(--warn) 75%,var(--bad));transition:width .4s"></div>
+      </div>
+    </div>
+    <!-- 知识库 / 记忆空间的上游（10-18 用户令「预留可配置的接口，以便自行配置飞牛OS」）——
+         ⛔ 留空 = 回退服务端环境变量；保存后**热生效**。对接步骤见 docs/FNOS-INTEGRATION.md。 -->
+    <div class="card" id="svcCard">
+      <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">知识库 · 记忆空间 <span class="pill ok">热生效</span>
+        <!-- 10-18 用户令「你这个云端配置没有教程啊」⇒ 右上角给明确入口，教程页可整段交给另一个 AI -->
+        <a class="btn sm" id="svcGuide" href="fnos-guide.html" target="_blank" rel="noopener"
+           style="margin-left:auto;text-decoration:none;display:inline-flex;align-items:center;gap:5px">配置教程 · 飞牛OS</a>
+      </h2>
+      <p class="hint" id="svcInfo">读取中…</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px;margin-bottom:12px">
+        <div>
+          <h3 class="sub" style="margin-top:0">知识库（WeKnora 兼容）</h3>
+          <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
+            <span class="hint">服务地址（留空 = 用环境变量；支持 http / 内网 IP / 端口）</span>
+            <input class="field" id="svcKbBase" spellcheck="false" placeholder="如 http://192.168.1.10:8080"
+                   style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit" />
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
+            <span class="hint">租户 API Key（留空 = 不修改；请求头 X-API-Key）</span>
+            <input class="field" id="svcKbKey" type="password" spellcheck="false"
+                   style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit" />
+          </label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <label style="flex:1;min-width:90px;display:flex;flex-direction:column;gap:4px"><span class="hint">LLM 模型 id</span><input class="field" id="svcKbLlm" spellcheck="false" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px" /></label>
+            <label style="flex:1;min-width:90px;display:flex;flex-direction:column;gap:4px"><span class="hint">嵌入模型 id</span><input class="field" id="svcKbEmbed" spellcheck="false" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px" /></label>
+            <label style="flex:1;min-width:90px;display:flex;flex-direction:column;gap:4px"><span class="hint">视觉模型 id</span><input class="field" id="svcKbVlm" spellcheck="false" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px" /></label>
+          </div>
+        </div>
+        <div>
+          <h3 class="sub" style="margin-top:0">记忆空间（MemHub 兼容）</h3>
+          <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
+            <span class="hint">服务地址（留空 = 用环境变量）</span>
+            <input class="field" id="svcMemBase" spellcheck="false" placeholder="如 http://192.168.1.10:8090"
+                   style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit" />
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
+            <span class="hint">检索代理地址（MCP 网关；留空 = 用环境变量）</span>
+            <input class="field" id="svcMemProxy" spellcheck="false"
+                   style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit" />
+          </label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <label style="flex:1;min-width:110px;display:flex;flex-direction:column;gap:4px"><span class="hint">实例名</span><input class="field" id="svcMemInstance" spellcheck="false" placeholder="default" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px" /></label>
+            <label style="flex:1;min-width:110px;display:flex;flex-direction:column;gap:4px"><span class="hint">API Key（留空 = 不修改）</span><input class="field" id="svcMemKey" type="password" spellcheck="false" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px" /></label>
+          </div>
+          <p class="hint" style="margin:0">⛔ 记忆的「读取」走检索代理地址；它填错会让对话带不上记忆（写入仍走服务地址）。</p>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn" id="svcSave">保存（热生效）</button>
+        <button class="btn" id="svcTestKb" style="font-size:12px">测试知识库</button>
+        <button class="btn" id="svcTestMem" style="font-size:12px">测试记忆</button>
+        <span class="hint" id="svcStatus"></span>
+      </div>
+      <div id="svcTestResult" style="display:none;margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>用户 · 权益 · 积分 <span class="pill ok">一处管理</span></h2>
+      <div class="hint" style="margin-bottom:4px">一个账号的全部管理动作都在这里：账号本身、知识库/记忆授权（按时长+额度）、积分发放与扣减。</div>
+
+      <h3 class="sub">账号一览</h3>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+        <input class="field" id="admq" placeholder="按用户名搜索…" style="flex:0 1 260px;min-width:160px" />
+        <button class="btn" id="admSearch">搜索</button>
+        <button class="btn" id="admAll">全部</button>
+        <button class="btn" id="admRefresh">刷新</button>
+        <span class="hint" id="admSummary"></span>
+      </div>
+      <div class="bulk-bar">
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="admAllPick" aria-label="全选" /><span class="hint">全选</span></label>
+        <span class="hint" id="admPicked">未选账号</span>
+        <span style="width:1px;height:20px;background:var(--line)"></span>
+        <select class="field" id="admFeature" aria-label="作用对象">
+          <option value="knowledge">知识库</option>
+          <option value="memory">记忆</option>
+          <option value="both">知识库 + 记忆</option>
+        </select>
+        <input class="field" id="admDays" type="number" min="1" step="30" value="30" aria-label="续期天数" />
+        <button class="btn sm primary" id="admBulkGrant">批量开通 / 续期</button>
+        <input class="field" id="admQuota" type="number" min="0" step="128" placeholder="MB" aria-label="容量 MB" />
+        <button class="btn sm" id="admBulkQuota">批量改容量</button>
+        <button class="btn sm danger" id="admBulkOff">批量停用</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="adm-cb"></th>
+            <th>用户名</th><th>角色</th><th>状态</th><th>最近登录</th><th>积分余额</th>
+            <th>发积分</th><th>云存储（GB）</th><th>知识库</th><th>记忆</th><th>操作</th>
+          </tr></thead>
+          <tbody id="admRows"></tbody>
+        </table>
+      </div>
+      <p class="status" id="admStatus"></p>
+
+      <!-- ⛔ 旧的三分区（① 用户 / ② 权益 / ③ 积分）：数据仍由原渲染器维护，但界面已由上面这张
+           「账号一览」合并表接管 ⇒ 这里整体隐藏，仅保留 id 以免旧渲染器取空报错。下一轮可整体删除。 -->
+      <div hidden>
+        <table><tbody id="auRows"></tbody></table>
+        <table><tbody id="auEntRows"></tbody></table>
+        <table><tbody id="apRows"></tbody></table>
+        <input id="apq" /><button id="apSearch"></button><button id="apAll"></button><span id="apSummary"></span>
+        <p id="auStatus"></p><p id="auEntStatus"></p><p id="apStatus"></p>
+      </div>
+    </div>
+
+    <div class="card" id="ivCard">
+      <!-- ⛔ 局部样式（类前缀 iv-）：生成行用 grid 对齐，⛔ 不用 flex-wrap 硬挤 ——
+           上一版三行标签各自折行、统计数字又挤在按钮右边，整块看着"上下乱行"（用户 10-16 截图）。 -->
+      <style>
+        #ivCard .iv-form { display: grid; grid-template-columns: minmax(200px, 1fr) 120px 130px auto; gap: 10px 12px; align-items: end; margin: 12px 0 10px; }
+        #ivCard .iv-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        #ivCard .iv-field > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #ivCard .iv-form > button { height: 34px; white-space: nowrap; }
+        #ivCard .iv-totals { margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+        #ivCard .iv-totals b { color: var(--text); }
+        #ivCard .iv-notes { line-height: 1.7; }
+        @media (max-width: 900px) {
+          #ivCard .iv-form { grid-template-columns: minmax(160px, 1fr) 110px 120px; }
+          #ivCard .iv-form > button { grid-column: 1 / -1; }
+        }
+      </style>
+      <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">邀请码 <span class="pill ok">管理员</span>
+        <button class="btn sm" id="ivRefresh" style="margin-left:auto">刷新</button>
+      </h2>
+      <p class="hint iv-notes">
+        用途：<b>监控注册来源</b> + <b>管控每个码的名额</b>。<br>
+        一个码可被多个账号使用；账号侧只记来源码，可反查到人。<br>
+        ⛔ 停用 / 过期 / 名额用完只挡<b>新注册</b>，已注册账号不受影响 · ⛔ 删号<b>不回收名额</b>。
+      </p>
+      <div class="iv-form">
+        <label class="iv-field">
+          <span class="hint">备注（来源标记，≤40 字）</span>
+          <input class="field" id="ivNote" maxlength="40" placeholder="例：B站-3月推广 / 内测群" />
+        </label>
+        <label class="iv-field">
+          <span class="hint">可用次数（0=不限）</span>
+          <input class="field" id="ivUses" type="number" min="0" max="10000" step="1" value="10" />
+        </label>
+        <label class="iv-field">
+          <span class="hint">有效期 天（0=永久）</span>
+          <input class="field" id="ivDays" type="number" min="0" max="3650" step="7" value="30" />
+        </label>
+        <button class="btn primary" id="ivCreate">生成邀请码</button>
+      </div>
+      <p class="hint iv-totals" id="ivTotals"></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>邀请码</th><th>备注（来源）</th><th>已用 / 上限</th><th>在册</th><th>状态</th><th>有效期至</th><th>最近使用</th><th>操作</th>
+          </tr></thead>
+          <tbody id="ivRows"></tbody>
+        </table>
+      </div>
+      <p class="status" id="ivStatus"></p>
+      <p class="hint">
+        · 「在册」= 这个码当前还能查到几个账号；与「已用」不一致说明有账号被删过（额度不回收）。<br>
+        · 点「账号」展开该码注册的账号明细（用户名 / 注册时间 / 最近登录 / 积分）；点「改额度」可随时调名额。
+      </p>
+    </div>
+
+    <div class="card" id="amCard">
+      <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">模型管理 <span class="pill ok">管理员</span>
+        <!-- 闲时（10-18 用户令：「不用单独一张卡片，精简成选项放到模型管理卡片里面」）——
+             默认只占标题行这一小段（开关 + 时段摘要 + 设置），点「设置」才展开编辑区。 -->
+        <span class="op-inline">
+          <span class="op-label">闲时时段<span class="qm" id="qmOffPeak" title="时段加载中…">?</span></span>
+          <label class="op-toggle" title="总闸：只影响「没单独设闲时倍率」的模型 —— 单独设过的一律按自己的值">
+            <input type="checkbox" id="opEnabled"> 启用
+          </label>
+          <span class="op-summary" id="opSummary">—</span>
+          <button class="btn sm" id="opEdit">设置</button>
+        </span>
+        <button class="btn sm" id="amExport">导出模型池</button>
+        <button class="btn sm" id="amSync">重新同步目录</button>
+      </h2>
+      <p class="hint">
+        <b>倍率</b> = 调用该模型时按倍率扣积分（如 0.29 表示 1 积分额度按 0.29 计），<b>留空 = 免费</b>。
+        修改<b>即时生效</b>（下一条调用即按新倍率）。目录同步后新增的模型会出现在这里。<br>
+        · 你改过的模型会标「<b>已钉</b>」——<b>同步目录不会再覆盖你的值</b>；点「恢复上游」回到上游倍率。<br>
+        · 没改过的模型显示上游倍率，上游调价时<b>自动跟随</b>。
+      </p>
+      <!-- 闲时时段编辑区：默认折叠（标题行「设置」展开）。⛔ 只定义时间，倍率在下面表格里按模型填。 -->
+      <div id="opEditor" style="display:none">
+        <p class="hint" style="margin:0 0 8px">
+          这里只定义<b>哪些时间算闲时</b>；闲时按多少倍率计费，在下面表格的「闲时改为」列逐个模型填。
+          ⛔ <b>闲时倍率是直接倍率、不是折扣</b>：高峰 0.11、闲时填 0.05 ⇒ 闲时按 <b>0.05</b> 扣（不是 0.11×0.05）。
+          下面的「默认倍率」只是兜底（留空 = 该时段不优惠）；单独设过的模型不受「启用」开关影响。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>名称</th><th>起始（点）</th><th>结束（点）</th><th>默认倍率（可留空）</th><th></th></tr></thead>
+            <tbody id="opRows"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+          <button class="btn sm" id="opAdd">添加时段</button>
+          <button class="btn sm" id="opSave">保存</button>
+          <span class="hint" id="opNow"></span>
+        </div>
+        <p class="status" id="opStatus"></p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>模型</th><th>ID</th><th>高峰倍率<span class="qm" id="qmPeak" title="时段加载中…">?</span></th><th>改为</th><th>闲时倍率<span class="qm" id="qmOff" title="时段加载中…">?</span></th><th>闲时改为</th></tr></thead>
+          <tbody id="amRows"></tbody>
+        </table>
+      </div>
+      <p class="status" id="amStatus"></p>
+
+      <h2 style="margin-top:22px">对用户开放的模型 <span class="hint" style="font-weight:400">（勾选=用户端能看到并自行选择的模型；<b>不会替他们勾选</b>）</span></h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn sm" id="amRefresh">刷新模型列表</button>
+        <button class="btn sm" id="amAll">全选</button>
+        <button class="btn sm" id="amNone">清空</button>
+        <button class="btn sm" id="amSaveUser">保存（对用户开放这些模型）</button>
+        <span class="hint" id="amUserInfo"></span>
+      </div>
+      <div id="amToast" style="display:none;margin:0 0 10px;padding:8px 12px;border-radius:8px;font-size:12.5px;border:1px solid var(--line);background:var(--ok-soft,#e8f5ec);color:var(--ok,#1a7f37)"></div>
+      <div id="amUserModels" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px 14px"></div>
+    </div>
+
+    <!-- 10-18：原「闲时时段」独立卡片已并入上方「模型管理」标题行的 .op-inline（用户令「不单独一张卡片」）。
+         ⛔ 别再把它拆回来 —— 那会让 #opAdd/#opSave/#opRows 出现重复 id。 -->
+  </div>
+</main>
+</div>
+
+
+  <script> void 0; </script>
+<script>(function () {
+  "use strict";
+  var API = "/cloud-api";
+  var AGENT = "http://127.0.0.1:8917";
+  var session = "";
+  try { session = localStorage.getItem("chc-session") || ""; } catch (e) { /* 忽略 */ }
+  var $ = function (id) { return document.getElementById(id); };
+  if (!session) { window.location.replace("index.html"); return; }
+
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = { "Content-Type": "application/json" };
+    if (session) headers.Authorization = "Bearer " + session;
+    return fetch(API + path, { method: opts.method || "GET", headers: headers, body: opts.body ? JSON.stringify(opts.body) : undefined })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); });
+  }
+  function fmt(ms) {
+    if (!ms) return "—";
+    var d = new Date(ms);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0") + " " +
+      String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+  function ago(ms) {
+    if (!ms) return "从未";
+    var s = Math.floor((Date.now() - ms) / 1000);
+    if (s < 60) return "刚刚";
+    if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+    if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+    return Math.floor(s / 86400) + " 天前";
+  }
+  function el(tag, cls, text) { var d = document.createElement(tag); if (cls) d.className = cls; if (text !== undefined) d.textContent = text; return d; }
+  function kv(box, pairs) {
+    box.innerHTML = "";
+    pairs.forEach(function (p) {
+      var k = el("div", "k", p[0]); var v = el("div", "v"); if (p[2]) v.innerHTML = p[2]; else v.textContent = p[1];
+      box.appendChild(k); box.appendChild(v);
+    });
+  }
+  function logout() {
+    api("/logout", { method: "POST" }).catch(function () { /* 忽略 */ });
+    try { localStorage.removeItem("chc-session"); } catch (e) { /* 忽略 */ }
+    window.location.href = "index.html";
+  }
+  $("logout").onclick = logout; $("logout2").onclick = logout;
+
+  /* ── 标签切换（桌面左导航 / 移动端顶部标签；hash 记住位置） ─────────── */
+  function show(tab) {
+    var found = false;
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (s) {
+      var on = s.getAttribute("data-tab") === tab; s.hidden = !on; if (on) found = true;
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (b) { b.classList.toggle("on", b.getAttribute("data-tab") === tab); });
+    if (tab === "user") loadPoints();
+    if (tab === "pair") refreshPairing();
+    if (tab === "cloud") refreshCloud();
+    if (tab === "admin") loadAdminPanel();
+    try { history.replaceState(null, "", "#" + tab); } catch (e) { /* 忽略 */ }
+    if (!found) show("user");
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (b) {
+    b.onclick = function () {
+      var t = b.getAttribute("data-tab");
+      if (t === "admin") { show("admin"); return; }
+      show(t);
+    };
+  });
+
+  /* ── 我的权益（知识库 / 记忆：按时长 + 额度，未开通可自助扣积分激活）───────
+     ⛔ 判定权在服务端（/entitlements）；这里只做展示与发起开通，别在前端复刻规则。 */
+  function entDate(ts) { return ts ? new Date(ts).toLocaleDateString() : "永久"; }
+  function loadEntitlements() {
+    var box = $("entList"); if (!box) return;
+    api("/entitlements").then(function (r) {
+      if (!r || !r.ok || !r.j || !r.j.ok) { box.innerHTML = '<div class="empty">读取失败</div>'; return; }
+      var ents = r.j.entitlements || {}, prices = r.j.pricing || {}, labels = r.j.labels || {};
+      var rows = "", onCount = 0;
+      ["knowledge", "memory"].forEach(function (f) {
+        var st = ents[f] || {}, pr = prices[f] || {}, label = labels[f] || f, on = !!st.enabled;
+        if (on) onCount++;
+        var detail = on
+          ? ("到期：" + entDate(st.expiresAt) +
+             (st.quotaMb ? "　容量：" + Math.round(st.usedMb || 0) + " / " + st.quotaMb + " MB" : "") +
+             (st.quota ? "　次数：" + (st.usedCount || 0) + " / " + st.quota : ""))
+          : (st.expired ? "已到期（" + entDate(st.expiresAt) + "），续期后恢复" : "未开通");
+        rows += '<div class="ent-row"><div><b>' + label + '</b><div class="hint">' + detail + '</div></div>' +
+          (on
+            ? '<span class="tag">已开通</span>'
+            : '<button class="btn primary" data-ent="' + f + '">' + (st.expired ? "续期" : "激活") +
+              (pr.points ? "（" + pr.points + " 积分 / " + pr.days + " 天）" : "") + '</button>') +
+          '</div>';
+      });
+      box.innerHTML = rows;
+      $("entTag").textContent = onCount + " / 2 项已开通";
+      Array.prototype.forEach.call(box.querySelectorAll("button[data-ent]"), function (btn) {
+        btn.addEventListener("click", function () {
+          var feature = btn.getAttribute("data-ent");
+          btn.disabled = true; var old = btn.textContent; btn.textContent = "开通中…";
+          api("/entitlements/activate", { method: "POST", body: { feature: feature } }).then(function (x) {
+            var j = (x && x.j) || {};
+            if (!x || !x.ok || !j.ok) {
+              alert(j.error === "insufficient-points"
+                ? ("积分不足：需要 " + j.need + "，当前 " + j.balance + "。可在「云端管理」里查看获取方式。")
+                : ("开通失败：" + (j.error || (x && x.status) || "未知错误")));
+              btn.disabled = false; btn.textContent = old; return;
+            }
+            loadEntitlements(); loadPoints();
+          })["catch"](function () { alert("开通失败：网络错误"); btn.disabled = false; btn.textContent = old; });
+        });
+      });
+    })["catch"](function () { box.innerHTML = '<div class="empty">读取失败</div>'; });
+  }
+
+  /* ── 记忆空间 / 知识库：锁态 + 轻界面（10-16 用户令：原产品界面不透给普通用户）──
+     ⛔ 锁在服务端：未授权时后端一律 403，这里只是把状态如实画出来，不是"前端藏起来"。 */
+  function adminHint() { return isAdmin ? "你是管理员，可在「用户管理」里为任意用户开通/续期。" : ""; }
+  function activateFeature(feature, after) {
+    return api("/entitlements/activate", { method: "POST", body: { feature: feature } }).then(function (x) {
+      var j = (x && x.j) || {};
+      if (!x || !x.ok || !j.ok) {
+        alert(j.error === "insufficient-points" ? ("积分不足：需要 " + j.need + "，当前 " + j.balance) : ("开通失败：" + (j.error || "未知错误")));
+        return false;
+      }
+      if (after) after(); else { loadEntitlements(); loadFeatureTabs(); }
+      return true;
+    })["catch"](function () { alert("开通失败：网络错误"); return false; });
+  }
+  function bindLock(root) {
+    Array.prototype.forEach.call(root.querySelectorAll("button[data-lock]"), function (b) {
+      b.addEventListener("click", function () {
+        b.disabled = true; var old = b.textContent; b.textContent = "开通中…";
+        activateFeature(b.getAttribute("data-lock"), loadFeatureTabs).then(function (okDone) { if (!okDone) { b.disabled = false; b.textContent = old; } });
+      });
+    });
+  }
+  function lockCard(feature, label, desc, st, pr) {
+    var expired = !!(st && st.expired);
+    return '<div class="card"><h2>' + label + ' <span class="pill">' + (expired ? "已到期" : "未开通") + '</span></h2>' +
+      '<div class="hint" style="margin-bottom:10px">' + desc + '</div>' +
+      (adminHint() ? '<div class="hint" style="margin-bottom:10px">' + adminHint() + '</div>' : "") +
+      '<div class="btn-row"><button class="btn primary" data-lock="' + feature + '">' + (expired ? "续期" : "激活") +
+      (pr && pr.points ? "（" + pr.points + " 积分 / " + pr.days + " 天）" : "") + '</button></div>' +
+      '<div class="hint" style="margin-top:8px">' + (expired ? "已于 " + entDate(st.expiresAt) + " 到期，" : "") + '开通后立即解锁，无需重启应用。</div></div>';
+  }
+  function statusCard(label, st, parts) {
+    var bits = ["到期：" + entDate(st.expiresAt)];
+    (parts || []).forEach(function (x) { if (x) bits.push(x); });
+    return '<div class="card"><h2>' + label + ' <span class="tag">已开通</span></h2><div class="hint" style="margin-bottom:12px">' + bits.join("　·　") + '</div>';
+  }
+  /* 通用弹窗（预览正文 / 看示例用）：不进页面布局、不占空间，点空白或「关闭」收起。 */
+  function showModal(title, bodyHtml) {
+    var old = $("mbModal"); if (old && old.parentNode) old.parentNode.removeChild(old);
+    var wrap = document.createElement("div");
+    wrap.id = "mbModal";
+    wrap.setAttribute("style", "position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px");
+    wrap.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:820px;width:100%;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25)">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)">' +
+      '<b style="font-size:15px">' + title + '</b><button class="btn sm" id="mbClose">关闭</button></div>' +
+      '<div style="padding:16px 18px;overflow:auto;line-height:1.75;font-size:13.5px">' + bodyHtml + '</div></div>';
+    wrap.addEventListener("click", function (ev) { if (ev.target === wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap); });
+    document.body.appendChild(wrap);
+    $("mbClose").addEventListener("click", function () { if (wrap.parentNode) wrap.parentNode.removeChild(wrap); });
+  }
+  function esc(t) { return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  /* 文档预览：图片直接显示图；文本类显示分块正文（后端已校验"是你的库里的"）。 */
+  function isImageName(name) { return /\.(png|jpe?g|gif|bmp|webp|heic|heif|tiff?|svg)$/i.test(String(name || "")); }
+  function previewDoc(id, title) {
+    if (isImageName(title)) {
+      showModal("预览 · " + esc(title), '<div class="empty">读取图片中…</div>');
+      /* ⛔ <img> 带不了 Authorization 头 ⇒ 先用 fetch 取 blob 再转 objectURL（同一条会话鉴权）。 */
+      fetch("/cloud-api/kb/file?id=" + encodeURIComponent(id), { headers: { Authorization: "Bearer " + session } })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); })
+        .then(function (blob) {
+          var objUrl = URL.createObjectURL(blob);
+          showModal("预览 · " + esc(title),
+            '<div style="text-align:center"><img src="' + objUrl + '" alt="' + esc(title) + '" style="max-width:100%;max-height:62vh;border-radius:10px;border:1px solid var(--line)" />' +
+            '<div class="hint" style="margin-top:10px">原图 ' + Math.round(blob.size / 1024) + ' KB</div></div>');
+        })["catch"](function (e) { showModal("预览 · " + esc(title), '<div class="empty">图片读取失败：' + esc(e && e.message ? e.message : e) + '</div>'); });
+      return;
+    }
+    showModal("预览 · " + esc(title), '<div class="empty">读取中…</div>');
+    api("/kb/doc?id=" + encodeURIComponent(id)).then(function (r) {
+      var j = (r && r.j) || {};
+      if (!r.ok || !j.ok) { showModal("预览 · " + esc(title), '<div class="empty">读取失败：' + esc(j.error || r.status) + '</div>'); return; }
+      var body = (j.chunks || []).map(function (c) {
+        return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="hint">分块 #' + (c.seq || "") + '</div><div style="white-space:pre-wrap">' + esc(c.text) + '</div></div>';
+      }).join("") || '<div class="empty">这份文档还没有解析出内容</div>';
+      showModal("预览 · " + esc(title), body);
+    })["catch"](function () { showModal("预览 · " + esc(title), '<div class="empty">读取失败：网络错误</div>'); });
+  }
+
+  function renderKbTab(st, pr) {
+    var host = $("kbTab"); if (!host) return;
+    if (!st || !st.enabled) {
+      host.innerHTML = lockCard("knowledge", "知识库", "上传 PDF / Word / Excel / Markdown / txt，Codex 回答时会直接检索到这些资料。", st, pr);
+      bindLock(host); return;
+    }
+    host.innerHTML = statusCard("知识库", st, [st.quotaMb ? ("容量：" + Math.round(st.usedMb || 0) + " / " + st.quotaMb + " MB") : ""]) +
+      '<div class="field-row"><input class="field" id="kbQuery" placeholder="检索你的资料，例如：内部暗号是什么" /></div>' +
+      '<div class="btn-row"><button class="btn primary" id="kbSearch">检索</button>' +
+      '<button class="btn" id="kbPick">上传文件</button><button class="btn" id="kbRefresh">刷新列表</button>' +
+      '<button class="btn" id="kbDemo">示例预览</button>' +
+      '<input type="file" id="kbFile" style="display:none" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.txt,.csv,.html,.json,image/*" multiple /></div>' +
+      '<div class="status" id="kbMsg"></div>' +
+      '<div style="margin-top:14px"><div class="hint" style="margin-bottom:6px">检索结果</div><div id="kbHits"><div class="empty">输入关键词后点「检索」</div></div></div>' +
+      '<div style="margin-top:14px"><div class="hint" style="margin-bottom:6px">我的文档</div><div id="kbDocs"><div class="empty">读取中…</div></div></div></div>';
+    function say(t, cls) { var m = $("kbMsg"); m.textContent = t || ""; m.className = "status" + (cls ? " " + cls : ""); }
+    function loadDocs() {
+      var box = $("kbDocs");
+      api("/kb/docs").then(function (r) {
+        var j = (r && r.j) || {};
+        if (!r.ok || !j.ok) { box.innerHTML = '<div class="empty">读取失败：' + (j.error || r.status) + '</div>'; return; }
+        if (!j.docs || !j.docs.length) { box.innerHTML = '<div class="empty">还没有文档，点「上传文件」加第一份</div>'; return; }
+        box.innerHTML = j.docs.map(function (d) {
+          var label = d.status === "completed" ? "已完成" : (d.status === "failed" ? "解析失败" : "解析中");
+          return '<div class="ent-row"><div><b><a href="#" data-view="' + d.id + '" data-title="' + esc(d.title) + '" style="color:inherit;text-decoration:none;border-bottom:1px dashed var(--line)">' + esc(d.title) + '</a></b><div class="hint">' + label + '　·　' +
+            (d.size ? Math.round(d.size / 1024) + " KB" : "") + (d.note ? "　·　" + esc(d.note) : "") + '</div></div>' +
+            '<button class="btn danger" data-del="' + d.id + '">删除</button></div>';
+        }).join("");
+        Array.prototype.forEach.call(box.querySelectorAll("a[data-view]"), function (a) {
+          a.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            previewDoc(a.getAttribute("data-view"), a.getAttribute("data-title") || "文档");
+          });
+        });
+        Array.prototype.forEach.call(box.querySelectorAll("button[data-del]"), function (b) {
+          b.addEventListener("click", function () {
+            if (!confirm("删除这份文档？删除后 Codex 就检索不到它了。")) return;
+            var old = b.textContent;
+            b.disabled = true; b.textContent = "删除中…";
+            api("/kb/delete", { method: "POST", body: { id: b.getAttribute("data-del") } }).then(function (r) {
+              var j = (r && r.j) || {};
+              if (!r.ok || !j.ok) {
+                b.disabled = false; b.textContent = old;
+                say("删除失败：" + (j.reason || j.error || ("HTTP " + r.status)), "err");
+                return;
+              }
+              say("已提交删除（后台任务，列表稍后自动刷新）", "ok");
+              /* ⛔ WeKnora 删除是**异步任务**：立刻刷一次往往还在，因此隔几秒连刷三次，
+                 否则用户会以为"删不掉"（10-16 用户报障）。 */
+              loadDocs();
+              [3, 8, 15].forEach(function (sec) { setTimeout(function () { loadDocs(); }, sec * 1000); });
+            })["catch"](function () { b.disabled = false; b.textContent = old; say("删除失败：网络错误", "err"); });
+          });
+        });
+      })["catch"](function () { box.innerHTML = '<div class="empty">读取失败</div>'; });
+    }
+    $("kbRefresh").addEventListener("click", function () { loadDocs(); say("已刷新"); });
+    $("kbDemo").addEventListener("click", function () {
+      showModal("知识库 · 示例预览（示例数据，非真实内容）",
+        '<div class="demo-banner">⚠️ 示例数据（非真实内容），用来看"资料多起来之后"的界面长什么样。</div>' +
+        '<div class="hint" style="margin-top:14px;margin-bottom:6px">我的文档（示例）</div>' +
+        [["产品 FAQ.pdf", "已完成", "412 KB"], ["接口约定.md", "已完成", "18 KB"], ["客服话术-2026Q3.docx", "解析中", "96 KB"]]
+          .map(function (d) {
+            return '<div class="ent-row"><div><b>' + d[0] + '</b><div class="hint">' + d[1] + '　·　' + d[2] + '</div></div><span class="tag">示例</span></div>';
+          }).join("") +
+        '<div class="hint" style="margin-top:14px;margin-bottom:6px">检索「退款要几天到账」的命中（示例）</div>' +
+        '<div class="kb-hit"><div class="hint">产品 FAQ.pdf　·　相关度 0.962</div><div>…退款申请通过后 3–5 个工作日原路退回；节假日顺延。如超时未到账，请提供订单号…</div></div>' +
+        '<div class="hint" style="margin-top:14px">真实使用时：点文档标题可预览分块正文；命中片段会由 Codex 带原文引用回答。</div>');
+    });
+    $("kbPick").addEventListener("click", function () { $("kbFile").click(); });
+    $("kbFile").addEventListener("change", function () {
+      var files = Array.prototype.slice.call($("kbFile").files || []);
+      if (!files.length) return;
+      var index = 0, okCount = 0, failCount = 0, lastErr = "";
+      function next() {
+        if (index >= files.length) {
+          say("上传完成：成功 " + okCount + " 份" + (failCount ? ("，失败 " + failCount + " 份 —— " + lastErr) : "") + "（解析需要一点时间，稍后点「刷新列表」）", failCount ? "err" : "ok");
+          $("kbFile").value = ""; loadDocs(); return;
+        }
+        var f = files[index++];
+        if (f.size > 12 * 1024 * 1024) { failCount++; lastErr = "「" + f.name + "」超过单份上限 12 MB"; say(lastErr, "err"); next(); return; }
+        say("上传中（" + index + "/" + files.length + "）：" + f.name + " 0%");
+        var fr = new FileReader();
+        fr.onload = function () {
+          var b64 = String(fr.result || "").split(",")[1] || "";
+          /* ⛔ 用 XHR 而不是 fetch：只有 XHR 能拿到**上传字节进度**（fetch 没有这个事件）。
+             没有进度反馈时用户会以为卡住/失败了（10-16 用户反馈）。 */
+          var xhr = new XMLHttpRequest();
+          xhr.open("POST", "/cloud-api/kb/upload");
+          xhr.setRequestHeader("Content-Type", "application/json");
+          xhr.setRequestHeader("Authorization", "Bearer " + session);
+          xhr.upload.onprogress = function (ev) {
+            if (!ev.lengthComputable) return;
+            var pct = Math.min(99, Math.round((ev.loaded / ev.total) * 100));
+            say("上传中（" + index + "/" + files.length + "）：" + f.name + " " + pct + "%");
+          };
+          xhr.onload = function () {
+            var j = null; try { j = JSON.parse(xhr.responseText); } catch (e) { /* 非 JSON */ }
+            var okHttp = xhr.status >= 200 && xhr.status < 300;
+            if (!okHttp || !j || !j.ok) {
+              failCount++;
+              lastErr = "「" + f.name + "」" + ((j && (j.reason || j.error)) || ("HTTP " + xhr.status));
+              say(lastErr, "err");
+            } else {
+              okCount++;
+              say("「" + f.name + "」已上传，正在解析…", "ok");
+            }
+            next();
+          };
+          xhr.onerror = function () { failCount++; lastErr = "「" + f.name + "」网络错误"; say(lastErr, "err"); next(); };
+          xhr.send(JSON.stringify({ name: f.name, contentB64: b64 }));
+        };
+        fr.readAsDataURL(f);
+      }
+      next();
+      /* 上传后自动刷列表几轮：让用户看到「解析中 → 已完成」，不用自己点刷新。 */
+      [4, 10, 20, 35].forEach(function (sec) { setTimeout(function () { loadDocs(); }, sec * 1000); });
+    });
+    $("kbSearch").addEventListener("click", function () {
+      var q = ($("kbQuery").value || "").trim(); if (!q) return;
+      var box = $("kbHits"); box.innerHTML = '<div class="empty">检索中…</div>';
+      api("/kb/search", { method: "POST", body: { query: q } }).then(function (r) {
+        var j = (r && r.j) || {};
+        if (!r.ok || !j.ok) { box.innerHTML = '<div class="empty">检索失败：' + (j.error || r.status) + '</div>'; return; }
+        if (!j.hits || !j.hits.length) { box.innerHTML = '<div class="empty">没有命中，换个说法或先上传资料</div>'; return; }
+        box.innerHTML = j.hits.map(function (h) {
+          return '<div class="kb-hit"><div class="hint">' + (h.title || "文档") + '　·　相关度 ' + (h.score || 0).toFixed(3) + '</div><div>' + h.snippet + '</div></div>';
+        }).join("");
+      })["catch"](function () { box.innerHTML = '<div class="empty">检索失败：网络错误</div>'; });
+    });
+    loadDocs();
+  }
+  function renderMemTab(st, pr) {
+    var host = $("memTab"); if (!host) return;
+    if (!st || !st.enabled) {
+      host.innerHTML = lockCard("memory", "记忆空间", "让 Codex 在对话里自动记住要点（项目背景、你的偏好、结论），下次对话自动带上。", st, pr);
+      bindLock(host); return;
+    }
+    host.innerHTML = statusCard("记忆空间", st, [
+      st.quotaMb ? ("容量：" + (Math.round((st.usedMb || 0) * 10) / 10) + " / " + st.quotaMb + " MB") : "",
+      st.quota ? ("次数：" + (st.usedCount || 0) + " / " + st.quota) : "",
+    ]) +
+      '<div class="hint" style="margin-bottom:12px">记忆由对话自动沉淀，无需手工维护。接入后可搜索、查看来源、单独删除。</div>' +
+      '<div class="btn-row"><button class="btn" id="memDemo">示例预览</button>' +
+      '<span class="hint" style="align-self:center">功能仍在接入中 —— 点左边看界面示例（<b>示例数据</b>，非真实内容）</span></div></div>';
+    $("memDemo").addEventListener("click", function () {
+      showModal("记忆空间 · 示例预览（示例数据，非真实内容）", memDemoHtml());
+      Array.prototype.forEach.call(document.querySelectorAll("#mbModal [data-memitem]"), function (el) {
+        el.addEventListener("click", function () {
+          showModal("记忆条目 · 示例（非真实内容）",
+            '<div class="demo-banner">⚠️ 示例数据</div>' +
+            '<div class="hint" style="margin-top:12px">来源：「项目规范讨论」· 2 天前 · 由对话自动沉淀</div>' +
+            '<div style="margin-top:8px">Codex Harness 项目内部暗号是橘子七号</div>');
+        });
+      });
+    });
+  }
+  /* 记忆页的示例内容（只用于预览界面；接入真实数据后整体删除本函数与入口按钮）。 */
+  function memDemoHtml() {
+    var demo = [
+      ["L1 要点", [
+        ["Codex Harness 项目内部暗号是橘子七号", "2 天前 · 来自「项目规范讨论」"],
+        ["负责人代号 PPZ", "2 天前 · 来自「项目规范讨论」"],
+        ["云助手的界面资源一律走服务器，本地不留 dist", "5 天前 · 来自「发版排障」"],
+      ]],
+      ["L2 场景", [
+        ["排查「改了不生效」时，先要构建指纹再定位", "3 天前 · 来自「发版排障」"],
+      ]],
+      ["L3 画像", [
+        ["偏好中文回答；要硬指标，不接受「跑绿」当通过", "1 周前 · 来自「日常协作」"],
+      ]],
+    ];
+    return '<div class="demo-banner">⚠️ 以下是<b>示例数据</b>（非真实内容）。记忆服务接入后，这里会换成你自己的记忆，并开放搜索、来源追溯与删除。</div>' +
+      demo.map(function (g) {
+        return '<div style="margin-top:14px"><div class="hint" style="margin-bottom:6px">' + g[0] + '　' + g[1].length + ' 条</div>' +
+          g[1].map(function (it) {
+            return '<div class="ent-row" data-memitem="1" style="cursor:pointer"><div><b>' + it[0] + '</b><div class="hint">' + it[1] + '</div></div><span class="tag">示例</span></div>';
+          }).join("") + '</div>';
+      }).join("") +
+      '<div class="hint" style="margin-top:14px">接入后：点任意条目可查看它的来源对话；右侧可单独删除。</div>';
+  }
+  function loadFeatureTabs() {
+    api("/entitlements").then(function (r) {
+      var j = (r && r.j) || {};
+      if (!r.ok || !j.ok) return;
+      var ents = j.entitlements || {}, pr = j.pricing || {};
+      renderKbTab(ents.knowledge, pr.knowledge);
+      renderMemTab(ents.memory, pr.memory);
+    });
+  }
+
+  /* ── 权益管理（管理员）：给任意账号开通/续期/停用「知识库 / 记忆」────────────
+     ⛔ 规则判定全在服务端（/admin/entitlements）；这里只发起请求并刷新。 */
+  function auEntSay(t, cls) { var st = $("auEntStatus"); if (!st) return; st.textContent = t || ""; st.className = "status" + (cls ? " " + cls : ""); }
+  function closeModal() { var m = $("mbModal"); if (m && m.parentNode) m.parentNode.removeChild(m); }
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") closeModal(); });
+
+  function entCellHtml(st, feature) {
+    var on = !!(st && st.enabled);
+    var meta = [];
+    if (on) {
+      meta.push("到期 " + entDate(st.expiresAt));
+      meta.push("容量 " + (Math.round((st.usedMb || 0) * 10) / 10) + " / " + (st.quotaMb || 0) + " MB");
+      if (feature === "memory" && st.quota) meta.push("次数 " + (st.usedCount || 0) + " / " + st.quota);
+    } else {
+      /* ⛔ 未开通时不再重复写「未开通」—— 上面那颗胶囊已经写了（用户 10-16 截图里就是重复两遍）。 */
+      if (st && st.expired) meta.push("已于 " + entDate(st.expiresAt) + " 到期");
+      if (st && st.quotaMb) meta.push("预设容量 " + st.quotaMb + " MB");
+    }
+    return '<div class="ent-cell">' +
+      '<button type="button" class="ent-pill ' + (on ? "on" : "off") + '" data-entopen="' + feature + '">' +
+      (st && st.expired ? "已到期" : (on ? "已开通" : "未开通")) + '</button>' +
+      /* ⛔ 每项独立一行：窄列里 "容量 0 / 1024 MB" 曾经被从斜杠处劈开、
+         "次数 0 / 2000" 更被劈成上一行结尾的「·」+ 下一行「2000」（用户 10-16 截图）。 */
+      '<div class="meta">' + meta.map(function (line) { return '<span class="meta-line">' + line + "</span>"; }).join("") + '</div></div>';
+  }
+
+  /* 权益详情 / 操作弹窗：容量、次数、续期、停用都在这里（取代表格里那排按钮）。 */
+  function openEntActions(username, feature, st, after) {
+    var isKb = feature === "knowledge";
+    var label = isKb ? "知识库" : "记忆";
+    var on = !!(st && st.enabled);
+    function refresh() { loadAdminAll($("admq") ? $("admq").value : ""); if (after) after(); }
+    function body() {
+      return '<div class="hint" style="margin-bottom:12px">账号 <b>' + esc(username) + '</b> · ' + label +
+        (on ? '　<span class="tag">已开通</span>' : (st && st.expired ? '　<span class="pill">已到期</span>' : '　<span class="pill">未开通</span>')) + '</div>' +
+        (on ? '<div class="hint" style="margin-bottom:12px">到期：<b>' + entDate(st.expiresAt) + '</b>　·　已用容量 ' + (Math.round((st.usedMb || 0) * 10) / 10) + ' MB' +
+          (isKb ? "" : ("　·　已用次数 " + (st.usedCount || 0))) + '</div>' : "") +
+        '<label for="mbCap" style="display:block;font-size:13px;margin-bottom:6px">容量上限（MB）</label>' +
+        '<input id="mbCap" class="field" type="number" min="0" step="128" value="' + (st.quotaMb || 0) + '" style="width:100%" aria-describedby="mbCapHint" />' +
+        '<div id="mbCapHint" class="hint" style="margin-top:6px">填 0 表示不限。</div>' +
+        (isKb ? "" :
+          '<label for="mbTimes" style="display:block;font-size:13px;margin:14px 0 6px">检索次数上限</label>' +
+          '<input id="mbTimes" class="field" type="number" min="0" step="100" value="' + (st.quota || 0) + '" style="width:100%" />') +
+        '<div class="btn-row" style="margin-top:16px;justify-content:flex-end;flex-wrap:wrap">' +
+        '<button class="btn sm" id="entSave">保存额度</button>' +
+        '<button class="btn sm primary" id="entGrant30">' + (on ? "续期 30 天" : "开通 30 天") + '</button>' +
+        (on ? '<button class="btn sm danger" id="entOff">停用</button>' : "") +
+        '</div>';
+    }
+    function open() {
+      showModal(label + " · " + esc(username), body());
+      $("entSave").addEventListener("click", function () {
+        var p = { username: username, feature: feature, quotaMb: Math.max(0, parseInt($("mbCap").value, 10) || 0) };
+        if (!isKb) p.quota = Math.max(0, parseInt($("mbTimes").value, 10) || 0);
+        api("/admin/entitlements", { method: "POST", body: p }).then(function (x) {
+          if (!x.ok || !x.j || !x.j.ok) { admSay("保存失败：" + ((x.j && x.j.error) || x.status), "err"); return; }
+          admSay("已更新「" + username + "」的" + label + "额度", "ok"); closeModal(); refresh();
+        });
+      });
+      $("entGrant30").addEventListener("click", function () {
+        api("/admin/entitlements", { method: "POST", body: { username: username, feature: feature, enabled: true, days: 30 } }).then(function () {
+          admSay("已为 " + username + (on ? " 续期 " : " 开通 ") + "30 天 " + label, "ok"); closeModal(); refresh();
+        });
+      });
+      if (on) $("entOff").addEventListener("click", function () {
+        if (!confirm("停用「" + username + "」的" + label + "？数据不会删除，续期即恢复。")) return;
+        api("/admin/entitlements", { method: "POST", body: { username: username, feature: feature, enabled: false } }).then(function () {
+          admSay("已停用 " + username + " 的" + label, "ok"); closeModal(); refresh();
+        });
+      });
+    }
+    open();
+  }
+
+  /* 改额度：知识库=容量(MB)；记忆=容量(MB) + 检索次数上限。两项**互相独立**。
+     只改额度、不动到期时间（后端 days 不传即保留）。 */
+  function quotaDialog(username, feature, st, after) {
+    var isKb = feature === "knowledge";
+    var capMb = st.quotaMb || 0;
+    var times = st.quota || 0;
+    var usedCap = (Math.round((st.usedMb || 0) * 10) / 10);
+    showModal("调整额度 · " + esc(username) + " · " + (isKb ? "知识库" : "记忆空间"),
+      '<label for="mbCap" style="display:block;font-size:13px;margin-bottom:6px">容量上限（MB）</label>' +
+      '<input id="mbCap" class="field" type="number" min="0" step="128" value="' + capMb + '" style="width:100%" aria-describedby="mbCapHint" />' +
+      '<div id="mbCapHint" class="hint" style="margin-top:6px">已用 ' + usedCap + ' MB；填 0 表示不限。</div>' +
+      (isKb ? "" :
+        '<label for="mbTimes" style="display:block;font-size:13px;margin:14px 0 6px">检索次数上限</label>' +
+        '<input id="mbTimes" class="field" type="number" min="0" step="100" value="' + times + '" style="width:100%" aria-describedby="mbTimesHint" />' +
+        '<div id="mbTimesHint" class="hint" style="margin-top:6px">已用 ' + (st.usedCount || 0) + ' 次；填 0 表示不限。</div>') +
+      '<div class="hint" style="margin-top:12px">' + (st && st.enabled
+        ? "只调整额度，<b>到期时间不变</b>。"
+        : "当前<b>未开通</b>：这里设的是预设额度，开通后生效（不会因此自动开通）。") + '</div>' +
+      '<div class="btn-row" style="justify-content:flex-end"><button class="btn" id="mbQuotaCancel">取消</button><button class="btn primary" id="mbQuotaSave">保存</button></div>');
+    $("mbCap").focus();
+    $("mbQuotaCancel").addEventListener("click", closeModal);
+    $("mbQuotaSave").addEventListener("click", function () {
+      var body = { username: username, feature: feature, quotaMb: Math.max(0, parseInt($("mbCap").value, 10) || 0) };
+      if (!isKb) body.quota = Math.max(0, parseInt($("mbTimes").value, 10) || 0);
+      api("/admin/entitlements", { method: "POST", body: body }).then(function (x) {
+        var j = (x && x.j) || {};
+        if (!x || !x.ok || !j.ok) { auEntSay("保存失败：" + (j.error || x.status), "err"); return; }
+        closeModal(); auEntSay("已更新「" + username + "」的额度", "ok");
+        if (after) after(); else loadEntAdmin();
+      })["catch"](function () { auEntSay("保存失败：网络错误", "err"); });
+    });
+  }
+  /* ── 账号一览：一张表一行管一个用户（账号 + 积分 + 权益）────────────────────────
+     数据来自两个接口（/admin/users、/admin/entitlements），按用户名合并成一行。
+     ⛔ 取代原先「① 用户 / ② 权益 / ③ 积分」三张表（那三块已 hidden，仅留 id 兼容旧渲染器）。 */
+  /* ── 批量操作：勾选账号 → 一次对多账号执行（开通/续期、改额度、停用）──────────── */
+  function bulkPicked() {
+    var out = [];
+    Array.prototype.forEach.call(document.querySelectorAll("#admRows tr[data-user]"), function (tr) {
+      var cb = tr.querySelector(".adm-pick");
+      if (cb && cb.checked) out.push(tr.getAttribute("data-user"));
+    });
+    return out;
+  }
+  function bulkSync() {
+    var names = bulkPicked();
+    if ($("admPicked")) $("admPicked").textContent = names.length ? ("已选 " + names.length + " 个账号") : "未选账号";
+  }
+  var bulkBound = false;
+  function bindBulkBar() {
+    if (bulkBound) return; bulkBound = true;
+    var all = $("admAllPick");
+    if (all) all.addEventListener("change", function () {
+      Array.prototype.forEach.call(document.querySelectorAll("#admRows .adm-pick"), function (cb) { cb.checked = all.checked; });
+      bulkSync();
+    });
+    function bind(id, fn) { if ($(id)) $(id).addEventListener("click", fn); }
+    bind("admBulkGrant", function () { bulkApply("grant", parseInt(($("admDays") && $("admDays").value) || "30", 10) || 30); });
+    bind("admBulkQuota", function () { bulkApply("quota", 0, Math.max(0, parseInt(($("admQuota") && $("admQuota").value) || "0", 10) || 0)); });
+    bind("admBulkOff", function () { bulkApply("off"); });
+    bind("admSearch", function () { loadAdminAll($("admq") ? $("admq").value : ""); });
+    bind("admAll", function () { if ($("admq")) $("admq").value = ""; loadAdminAll(""); });
+    bind("admRefresh", function () { loadAdminAll($("admq") ? $("admq").value : ""); });
+    bind("admq", function () { });
+  }
+  function bulkApply(mode, days, quotaMb) {
+    var names = bulkPicked();
+    if (!names.length) { admSay("先勾选要操作的账号", "err"); return; }
+    var featSel = ($("admFeature") && $("admFeature").value) || "knowledge";
+    var features = featSel === "both" ? ["knowledge", "memory"] : [featSel];
+    var featLabel = featSel === "both" ? "知识库+记忆" : (featSel === "knowledge" ? "知识库" : "记忆");
+    var what = mode === "grant" ? ("开通/续期 " + days + " 天") : (mode === "quota" ? ("把容量改成 " + quotaMb + " MB") : "停用");
+    if (!confirm("对 " + names.length + " 个账号的「" + featLabel + "」执行：" + what + "？")) return;
+    var queue = [];
+    names.forEach(function (n) { features.forEach(function (f) { queue.push({ username: n, feature: f }); }); });
+    var i = 0, failed = [];
+    admSay("批量处理中 0/" + queue.length + " …");
+    (function next() {
+      if (i >= queue.length) {
+        admSay("批量完成：成功 " + (queue.length - failed.length) + " 项" + (failed.length ? ("，失败 " + failed.length + " 项") : ""), failed.length ? "err" : "ok");
+        loadAdminAll($("admq") ? $("admq").value : "");
+        return;
+      }
+      var item = queue[i++];
+      var body = { username: item.username, feature: item.feature };
+      if (mode === "grant") { body.enabled = true; body.days = days; }
+      else if (mode === "off") { body.enabled = false; }
+      else { body.quotaMb = quotaMb; }
+      api("/admin/entitlements", { method: "POST", body: body }).then(function (x) {
+        if (!x.ok || !x.j || !x.j.ok) failed.push(item.username + "/" + item.feature);
+        admSay("批量处理中 " + i + "/" + queue.length + " …");
+        next();
+      })["catch"](function () { failed.push(item.username); next(); });
+    })();
+  }
+
+  function admSay(t, cls) { var st = $("admStatus"); if (!st) return; st.textContent = t || ""; st.className = "status" + (cls ? " " + cls : ""); }
+  function loadAdminAll(filter) {
+    var box = $("admRows"); if (!box) return;
+    bindBulkBar();
+    box.innerHTML = '<tr><td colspan="11" class="empty">读取中…</td></tr>';
+    Promise.all([api("/admin/users"), api("/admin/entitlements")]).then(function (res) {
+      var usersRes = (res[0] && res[0].j) || {}, entRes = (res[1] && res[1].j) || {};
+      if (!res[0].ok || !usersRes.ok) { box.innerHTML = '<tr><td colspan="10" class="empty">读取失败：' + esc(usersRes.error || res[0].status) + '</td></tr>'; return; }
+      var entMap = {}, rows = usersRes.users || [];
+      (entRes.users || []).forEach(function (r) { entMap[r.username] = r.entitlements || {}; });
+      var q = String(filter || "").trim().toLowerCase();
+      if (q) rows = rows.filter(function (r) { return String(r.username).toLowerCase().indexOf(q) >= 0; });
+      if (!rows.length) { box.innerHTML = '<tr><td colspan="10" class="empty">没有匹配的账号</td></tr>'; return; }
+      box.innerHTML = rows.map(function (row) {
+        var ent = entMap[row.username] || {};
+        return '<tr data-user="' + esc(row.username) + '">' +
+          '<td class="adm-cb"><input type="checkbox" class="adm-pick" aria-label="选择 ' + esc(row.username) + '" /></td>' +
+          '<td><b>' + esc(row.username) + '</b></td>' +
+          '<td><span class="pill' + (row.role === "admin" ? "" : " ok") + '">' + (row.role === "admin" ? "管理员" : "用户") + '</span></td>' +
+          '<td><span class="pill ' + (row.disabled ? "bad" : "ok") + '">' + (row.disabled ? "已停用" : "正常") + '</span></td>' +
+          '<td>' + fmt(row.lastLogin) + '</td>' +
+          '<td>' + Number(row.balance || 0).toFixed(2).replace(/\.00$/, "") + '</td>' +
+          '<td><div style="display:flex;gap:6px"><input class="field" data-pt type="number" placeholder="±分" style="width:84px" /><button class="btn sm" data-ptgo>发放</button></div></td>' +
+          '<td><div style="display:flex;gap:6px"><input class="field" data-gb type="number" min="0" step="1" style="width:72px" value="' + (row.quotaGB === undefined || row.quotaGB === null ? "" : row.quotaGB) + '" placeholder="GB" /><button class="btn sm" data-gbgo>保存</button></div></td>' +
+          '<td>' + entCellHtml(ent.knowledge, "knowledge") + '</td>' +
+          '<td>' + entCellHtml(ent.memory, "memory") + '</td>' +
+          '<td><div class="btn-row" style="flex-wrap:nowrap;margin:0">' +
+            '<button class="btn sm" data-toggle>' + (row.disabled ? "启用" : "停用") + '</button>' +
+            '<button class="btn sm" data-reset>重置密码</button>' +
+            (row.role === "admin" ? "" : '<button class="btn sm danger" data-deluser>删除</button>') +
+          '</div></td></tr>';
+      }).join("");
+      admSay("共 " + rows.length + " 个账号");
+
+      Array.prototype.forEach.call(box.querySelectorAll("tr[data-user]"), function (tr) {
+        var username = tr.getAttribute("data-user");
+        var ent = entMap[username] || {};
+        /* ⛔ 必须 querySelectorAll：一行里同一种按钮有**两个**（知识库徽标 + 记忆徽标），
+           用 querySelector 只会绑上第一个 ⇒ 第二个永远点不动（10-16 用户报"记忆点击没反应"）。 */
+        function act(sel, fn) {
+          Array.prototype.forEach.call(tr.querySelectorAll(sel), function (b) {
+            b.addEventListener("click", function () { fn(b); });
+          });
+        }
+        act("[data-ptgo]", function (b) {
+          var input = tr.querySelector("[data-pt]");
+          var delta = Number(input.value);
+          if (!Number.isFinite(delta) || !delta) { admSay("请填一个非 0 的分值", "err"); return; }
+          b.disabled = true;
+          api("/admin/points/grant", { method: "POST", body: { username: username, delta: delta, note: "管理员 " + (me ? me.username : "") + " 操作" } }).then(function (r) {
+            b.disabled = false;
+            if (!r.ok || !r.j || !r.j.ok) { admSay("发放失败：" + ((r.j && r.j.error) || r.status), "err"); return; }
+            admSay("已为 " + username + (delta > 0 ? " 增加 " : " 扣减 ") + Math.abs(delta) + " 积分", "ok");
+            loadAdminAll($("admq") ? $("admq").value : "");
+          });
+        });
+        act("[data-gbgo]", function (b) {
+          var gb = Number(tr.querySelector("[data-gb]").value);
+          if (!Number.isFinite(gb) || gb < 0) { admSay("云存储配额要填非负整数（GB）", "err"); return; }
+          b.disabled = true;
+          api("/admin/users/storage", { method: "POST", body: { username: username, quotaGB: gb } }).then(function (r) {
+            b.disabled = false;
+            if (!r.ok) { admSay("保存失败：HTTP " + r.status, "err"); return; }
+            admSay("已把 " + username + " 的云存储配额设为 " + gb + " GB", "ok");
+          });
+        });
+        /* 权益列：徽标可点 → 弹窗里改容量/续期/停用（原来那排按钮已撤） */
+        act("[data-entopen]", function (b) {
+          var feature = b.getAttribute("data-entopen");
+          openEntActions(username, feature, ent[feature] || {});
+        });
+        /* 勾选后同步批量栏计数 */
+        var pick = tr.querySelector(".adm-pick");
+        if (pick) pick.addEventListener("change", function () { bulkSync(); });
+        act("[data-toggle]", function (b) {
+          b.disabled = true;
+          api("/admin/users/toggle", { method: "POST", body: { username: username, disabled: !(tr.querySelector("[data-toggle]").textContent === "停用") } }).then(function () {
+            loadAdminAll($("admq") ? $("admq").value : "");
+          });
+        });
+        act("[data-reset]", function () {
+          resetPasswordDialog(username, function () { loadAdminAll($("admq") ? $("admq").value : ""); });
+        });
+        act("[data-deluser]", function () {
+          if (!confirm("删除账号「" + username + "」？该账号的云端数据会一并处置，不可恢复。")) return;
+          api("/admin/users/delete", { method: "POST", body: { username: username } }).then(function (r) {
+            if (!r.ok) { admSay("删除失败：HTTP " + r.status, "err"); return; }
+            admSay("已删除 " + username, "ok");
+            loadAdminAll($("admq") ? $("admq").value : "");
+          });
+        });
+      });
+    })["catch"](function () { box.innerHTML = '<tr><td colspan="10" class="empty">读取失败：网络错误</td></tr>'; });
+  }
+
+  /* 重置密码：弹窗输入（项目惯例不用 window.prompt）。 */
+  function resetPasswordDialog(username, after) {
+    showModal("重置密码 · " + esc(username),
+      '<label for="mbPw" style="display:block;font-size:13px;margin-bottom:6px">新密码（至少 8 位）</label>' +
+      '<input id="mbPw" class="field" type="password" style="width:100%" autocomplete="new-password" />' +
+      '<div class="btn-row" style="justify-content:flex-end"><button class="btn" id="mbPwCancel">取消</button><button class="btn primary" id="mbPwSave">重置</button></div>');
+    $("mbPw").focus();
+    $("mbPwCancel").addEventListener("click", closeModal);
+    $("mbPwSave").addEventListener("click", function () {
+      var pw = $("mbPw").value || "";
+      if (pw.length < 8) { admSay("新密码至少 8 位", "err"); $("mbPw").focus(); return; }
+      api("/admin/users/reset", { method: "POST", body: { username: username, password: pw } }).then(function (r) {
+        if (!r.ok || !r.j || !r.j.ok) { admSay("重置失败：" + ((r.j && r.j.error) || r.status), "err"); return; }
+        closeModal(); admSay("已重置 " + username + " 的密码", "ok"); if (after) after();
+      });
+    });
+  }
+
+  function loadEntAdmin() {
+    var box = $("auEntRows"); if (!box) return;
+    api("/admin/entitlements").then(function (r) {
+      var j = (r && r.j) || {};
+      if (!r.ok || !j.ok) { box.innerHTML = '<tr><td colspan="3" class="empty">读取失败：' + (j.error || r.status) + '</td></tr>'; return; }
+      var prices = j.pricing || {};
+      box.innerHTML = (j.users || []).map(function (u) {
+        var e = u.entitlements || {};
+        return '<tr data-user="' + u.username + '"><td><b>' + u.username + '</b>' +
+          (u.role === "admin" ? ' <span class="pill">管理员</span>' : "") + (u.disabled ? ' <span class="pill">已停用</span>' : "") + '</td>' +
+          '<td>' + entCellHtml(e.knowledge, "knowledge") + '</td>' +
+          '<td>' + entCellHtml(e.memory, "memory") + '</td></tr>';
+      }).join("");
+      Array.prototype.forEach.call(box.querySelectorAll("button[data-entgrant],button[data-entoff],button[data-entquota]"), function (b) {
+        b.addEventListener("click", function () {
+          var row = b.closest("tr"), username = row && row.getAttribute("data-user"); if (!username) return;
+          if (b.hasAttribute("data-entquota")) {
+            var entry = ((j.users || []).find(function (u) { return u.username === username; }) || {}).entitlements || {};
+            quotaDialog(username, b.getAttribute("data-entquota"), entry[b.getAttribute("data-entquota")] || {});
+            return;
+          }
+          var feature = b.getAttribute("data-entgrant") || b.getAttribute("data-entoff");
+          var turningOff = b.hasAttribute("data-entoff");
+          var days = parseInt(b.getAttribute("data-days") || "30", 10) || 30;
+          if (turningOff && !confirm("停用「" + username + "」的" + (feature === "knowledge" ? "知识库" : "记忆") + "？数据不会删除，续期即恢复。")) {
+            return;
+          }
+          b.disabled = true; auEntSay("处理中…");
+          api("/admin/entitlements", { method: "POST", body: { username: username, feature: feature, enabled: !turningOff, days: days } }).then(function (x) {
+            var jj = (x && x.j) || {};
+            if (!x || !x.ok || !jj.ok) { auEntSay("失败：" + (jj.error || x.status), "err"); b.disabled = false; return; }
+            auEntSay(turningOff ? ("已停用 " + username + " 的该项权益") : ("已为 " + username + " 开通 " + days + " 天"), "ok");
+            loadEntAdmin();
+          })["catch"](function () { auEntSay("失败：网络错误", "err"); b.disabled = false; });
+        });
+      });
+      auEntSay("共 " + (j.users || []).length + " 个账号");
+    })["catch"](function () { box.innerHTML = '<tr><td colspan="3" class="empty">读取失败</td></tr>'; });
+  }
+
+  /* ── 账号资料 ─────────────────────────────────────────────────── */
+  var me = null;
+  var isAdmin = false;   /* 管理员判定（记忆空间/知识库入口的第二道防线） */
+  api("/me").then(function (r) {
+    if (!r.ok || !r.j || !r.j.ok) { try { localStorage.removeItem("chc-session"); } catch (e) { } window.location.replace("index.html"); return; }
+    me = r.j.account;
+    kv($("profile"), [
+      ["用户名", me.username],
+      ["角色", me.role === "admin" ? "管理员" : "普通用户"],
+      ["注册时间", fmt(me.createdAt)],
+      ["上次登录", fmt(me.lastLogin)],
+    ]);
+    $("whoami").innerHTML = "当前账号：<b>" + me.username + "</b>";
+    loadPoints();
+    loadEntitlements();
+    loadFeatureTabs();
+    /* ⛔ 双保险：非管理员不仅 hidden，还**从 DOM 摘除**（不靠 CSS 兜底，也不在页面里留痕迹） */
+    isAdmin = me.role === "admin";
+    /* ⛔ 19:0x 用户定案：记忆空间/知识库**不在用户中心内嵌**（iframe 的登录态是浏览器级 cookie，
+       同一浏览器上任何人都能借管理员的登录直接用 = 绕过授权，用户实测指出）。入口与面板已撤除，
+       管理员请直接访问 mem./kb.ppz123.asia（建议用无痕窗口）。 */
+    if (isAdmin) { $("navAdmin").hidden = false; loadAdminAll(); }
+    else { var a = $("navAdmin"); if (a && a.parentNode) a.parentNode.removeChild(a); }
+    var start = (location.hash || "#user").slice(1);
+    show(["user", "pair", "cloud", "memory", "kb", "admin"].indexOf(start) >= 0 ? start : "user");
+  }).catch(function () { window.location.replace("index.html"); });
+
+  /* ── 用户管理（管理员，就地视图；10-15 从 admin.html 迁入并修正端点） ── */
+  function auSay(text, cls) { var st = $("auStatus"); st.textContent = text; st.className = "status" + (cls ? " " + cls : ""); }
+  function auGb(n) { return (n / 1073741824).toFixed(1); }
+  function loadUpstreamCfg() {
+    api("/admin/upstream").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { $("adminTab").hidden = true; return; }
+      $("auBase").value = r.j.base || "";
+      if ($("auCatalogBase")) $("auCatalogBase").value = r.j.catalogBase || "";
+      $("auKey").value = "";
+      $("auKey").placeholder = r.j.hasKey ? "已保存，留空则不修改" : "上游网关的 API Key";
+      /* ⛔ 这段文字是管理员排查"到底在用哪个地址"的唯一入口 —— 必须把
+         「来源 / 实际生效的目录地址 / 环境变量值 / http 明文警告」都摊开。 */
+      var bits = ["来源：" + (r.j.source === "admin" ? "管理员配置" : "服务端环境变量")];
+      bits.push(r.j.hasKey ? "网关密钥已配置" : "网关密钥未配置");
+      if (r.j.effectiveCatalogBase && r.j.effectiveCatalogBase !== r.j.base) bits.push("目录同步走 " + r.j.effectiveCatalogBase);
+      if (r.j.source === "env" && r.j.envBase) bits.push("环境变量地址 " + r.j.envBase);
+      if (r.j.insecure) bits.push("⚠️ http 明文（仅建议内网）");
+      $("auInfo").textContent = bits.join(" · ");
+    });
+  }
+  function loadDiskInfo() {
+    $("auDiskInfo").textContent = "服务器磁盘余量读取中…";
+    api("/admin/disk").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { $("auDiskInfo").textContent = "磁盘余量读取失败：" + ((r.j && r.j.error) || r.status); return; }
+      var pct = Math.min(100, Math.round(r.j.usedBytes / r.j.totalBytes * 100));
+      $("auDiskBar").style.width = pct + "%";
+      $("auDiskInfo").textContent = "服务器磁盘：总 " + auGb(r.j.totalBytes) + " GB · 已用 " + pct + "% · 剩余 " + auGb(r.j.freeBytes) + " GB";
+    });
+  }
+  function loadAdminPanel() {
+    loadUpstreamCfg(); loadDiskInfo(); loadServices(); loadAdminPoints(""); loadAdminModels(); loadOffPeak(); loadInvites();
+    api("/admin/users").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { auSay("用户列表读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
+      renderAdmin(r.j.users || []);
+    });
+  }
+  function renderAdmin(users) {
+    var box = $("auRows"); box.innerHTML = "";
+    function tag(text, kind) { return Object.assign(document.createElement("span"), { className: "pill " + kind, textContent: text }); }
+    users.forEach(function (u) {
+      var tr = document.createElement("tr");
+      var td1 = document.createElement("td");
+      td1.appendChild(Object.assign(document.createElement("span"), { className: "name", textContent: u.username }));
+      if (u.disabled) td1.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: " （已停用）" }));
+      tr.appendChild(td1);
+      tr.appendChild(Object.assign(document.createElement("td"), { innerHTML: '<span class="pill' + (u.role === "admin" ? "" : " ok") + '">' + (u.role === "admin" ? "管理员" : "用户") + "</span>" }));
+      tr.appendChild(Object.assign(document.createElement("td"), { innerHTML: '<span class="pill ' + (u.disabled ? "bad" : "ok") + '">' + (u.disabled ? "已停用" : "正常") + "</span>" }));
+      tr.appendChild(Object.assign(document.createElement("td"), { textContent: fmt(u.lastLogin) }));
+      tr.appendChild(Object.assign(document.createElement("td"), { textContent: Number(u.balance === undefined || u.balance === null ? 0 : u.balance).toFixed(2).replace(/\.00$/, "") }));
+      var tdQ = document.createElement("td");
+      var qwrap = document.createElement("div"); qwrap.style.cssText = "display:flex;gap:6px;align-items:center";
+      var qin = document.createElement("input");
+      qin.type = "number"; qin.min = "1"; qin.max = "1024";
+      qin.value = Math.round((Number(u.quotaBytes) > 0 ? u.quotaBytes : 1073741824) / 1073741824 * 100) / 100;
+      qin.style.cssText = "width:84px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px";
+      var qgo = document.createElement("button"); qgo.className = "btn"; qgo.textContent = "保存";
+      qgo.onclick = function () {
+        var v = Number(qin.value);
+        if (!Number.isFinite(v) || v <= 0 || v > 1024) { auSay("配额必须是 0~1024 之间的 GB 数", "bad"); return; }
+        qgo.disabled = true;
+        api("/admin/users/storage", { method: "POST", body: { username: u.username, quotaGB: v } }).then(function (r) {
+          qgo.disabled = false;
+          if (r.ok && r.j && r.j.ok) { auSay(u.username + " 的云存储配额已设为 " + v + " GB（立即生效）", "ok"); loadAdminPanel(); }
+          else { auSay("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+        }).catch(function () { qgo.disabled = false; auSay("网络错误", "bad"); });
+      };
+      if (u.quotaOverride) qwrap.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: "自定义" }));
+      qwrap.appendChild(qin); qwrap.appendChild(qgo); tdQ.appendChild(qwrap); tr.appendChild(tdQ);
+      var tdOps = document.createElement("td");
+      var ops = document.createElement("div"); ops.style.cssText = "display:flex;gap:6px";
+      var mk = function (text, cls, fn) { var b = document.createElement("button"); b.className = cls; b.textContent = text; b.onclick = fn; return b; };
+      ops.appendChild(mk(u.disabled ? "启用" : "停用", "btn", function () {
+        var next = !u.disabled;
+        if (!window.confirm((next ? "启用" : "停用") + "「" + u.username + "」？" + (next ? "" : "该用户会立即被踢下线且无法登录。"))) return;
+        api("/admin/users/toggle", { method: "POST", body: { username: u.username, disabled: next } }).then(function (r) {
+          if (r.ok && r.j && r.j.ok) { auSay("已" + (next ? "启用" : "停用") + " " + u.username, "ok"); loadAdminPanel(); }
+          else { auSay("操作失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+        }).catch(function () { auSay("网络错误", "bad"); });
+      }));
+      ops.appendChild(mk("重置密码", "btn", function () {
+        var pw = window.prompt("给「" + u.username + "」设置新密码（至少 8 位）：");
+        if (!pw) return;
+        if (pw.length < 8) { auSay("新密码至少 8 位", "bad"); return; }
+        api("/admin/users/reset", { method: "POST", body: { username: u.username, password: pw } }).then(function (r) {
+          if (r.ok && r.j && r.j.ok) { auSay("已重置 " + u.username + " 的密码（该用户已全部下线）", "ok"); }
+          else { auSay("重置失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+        }).catch(function () { auSay("网络错误", "bad"); });
+      }));
+      if (u.role !== "admin") ops.appendChild(mk("删除", "btn", function () {
+        if (!window.confirm("⚠ 不可恢复：确定删除「" + u.username + "」？（连积分/勾选/令牌/配额/全部会话一起清除）")) return;
+        api("/admin/users/delete", { method: "POST", body: { username: u.username } }).then(function (r) {
+          if (r.ok && r.j && r.j.ok) { auSay("已删除 " + u.username, "ok"); loadAdminPanel(); }
+          else { auSay("删除失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+        }).catch(function () { auSay("网络错误", "bad"); });
+      }));
+      tdOps.appendChild(ops); tr.appendChild(tdOps);
+      box.appendChild(tr);
+    });
+  }
+  if ($("auSave")) $("auSave").onclick = function () {
+    var base = $("auBase").value.trim();
+    if (!base) { auSay("请先填上游地址", "bad"); return; }
+    $("auSave").disabled = true;
+    /* ⛔ 前端**不再**强制 https：协议适配已放宽到 http / 裸主机 / 内网 / 端口 / 路径前缀，
+       合法性统一由服务端 normalizeUpstreamBase 判定（前端只挡空值，避免两处规则漂移）。 */
+    api("/admin/upstream", { method: "POST", body: { base: base, catalogBase: $("auCatalogBase") ? $("auCatalogBase").value.trim() : "", gatewayKey: $("auKey").value.trim() } }).then(function (r) {
+      $("auSave").disabled = false;
+      if (r.ok && r.j && r.j.ok) {
+        auSay("上游 API 已更新并热生效（下一条调用即走新地址）" + (r.j.warning ? " · " + r.j.warning : ""), "ok");
+        loadUpstreamCfg(); loadDiskInfo();
+      }
+      else { auSay("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+    }).catch(function () { $("auSave").disabled = false; auSay("网络错误", "bad"); });
+  };
+  /* 连通性测试（10-18 用户令）：把「哪个端点通 / 状态码 / 耗时 / 原因」逐行摊开，
+     ⛔ 不弹 alert（管理员要能对照着看），结果就地渲染在 #auTestResult。 */
+  if ($("auTest")) $("auTest").onclick = function () {
+    var base = $("auBase").value.trim();
+    if (!base) { auSay("先填上游地址再测", "bad"); return; }
+    var btn = $("auTest"); btn.disabled = true; btn.textContent = "测试中…";
+    auSay("测试中（最多约 16 秒）…");
+    api("/admin/upstream/test", { method: "POST", body: { base: base, gatewayKey: $("auKey").value.trim() } }).then(function (r) {
+      btn.disabled = false; btn.textContent = "测试连通性";
+      var box = $("auTestResult");
+      var j = r.j || {};
+      if (!r.ok || !j.probes) {
+        box.style.display = "";
+        box.innerHTML = '<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--bad)">测试失败：'
+          + esc(j.error || ("HTTP " + r.status)) + "</div>";
+        auSay("测试失败", "bad");
+        return;
+      }
+      var rows = (j.probes || []).map(function (p) {
+        var col = p.ok ? "var(--ok)" : "var(--bad)";
+        return '<div style="padding:7px 0;border-top:1px solid var(--line-soft)">'
+          + '<b style="color:' + col + '">' + (p.ok ? "✓" : "✗") + " " + esc(p.name) + "</b>"
+          + '<span class="hint" style="margin-left:6px">HTTP ' + (p.status || "—") + " · " + p.ms + "ms"
+          + (p.count != null ? " · " + p.count + " 个模型" : "") + "</span>"
+          + (p.hint ? '<div class="hint" style="margin-top:3px">' + esc(p.hint) + "</div>" : "")
+          + "</div>";
+      }).join("");
+      box.style.display = "";
+      box.innerHTML = '<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field)">'
+        + '<div style="font-weight:600;color:' + (j.ok ? "var(--ok)" : "var(--bad)") + '">' + esc(j.message || "") + "</div>"
+        + '<div class="hint" style="margin:4px 0 6px">地址 ' + esc(j.base) + " · 总耗时 " + j.elapsedMs + "ms"
+        + (j.warning ? " · ⚠️ " + esc(j.warning) : "") + (j.hasKey ? "" : " · 未带网关密钥") + "</div>"
+        + rows + "</div>";
+      auSay(j.ok ? "连通性正常" : "不可达（看上方逐行原因）", j.ok ? "ok" : "bad");
+    }).catch(function () {
+      btn.disabled = false; btn.textContent = "测试连通性"; auSay("网络错误", "bad");
+    });
+  };
+  if ($("auDiskRefresh")) $("auDiskRefresh").onclick = loadDiskInfo;
+
+  /* ── 知识库 / 记忆空间上游（10-18）：回显 + 保存（热生效）+ 单服务测试 ──
+     ⛔ 留空的字段由服务端解释为"回退环境变量 / 不修改"，前端不要自己补默认值。 */
+  function svcSay(text, cls) { var el = $("svcStatus"); if (!el) return; el.textContent = text || ""; el.className = "hint" + (cls ? " " + cls : ""); }
+  function loadServices() {
+    if (!$("svcKbBase")) return;
+    api("/admin/services").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { svcSay("读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
+      var kb = r.j.kb || {}, mem = r.j.memory || {};
+      $("svcKbBase").value = kb.base || "";
+      $("svcKbKey").value = "";
+      $("svcKbKey").placeholder = kb.hasKey ? "已保存（" + (kb.key || "") + "），留空不改" : "租户 API Key";
+      $("svcKbLlm").value = kb.llmModelId || "";
+      $("svcKbEmbed").value = kb.embedModelId || "";
+      $("svcKbVlm").value = kb.vlmModelId || "";
+      $("svcMemBase").value = mem.base || "";
+      $("svcMemProxy").value = mem.proxyBase || "";
+      $("svcMemInstance").value = mem.instance || "";
+      $("svcMemKey").value = "";
+      $("svcMemKey").placeholder = mem.hasKey ? "已保存，留空不改" : "API Key";
+      /* ⛔ 这行是管理员排查"到底在用哪个地址"的唯一入口 —— 生效值必须摊开 */
+      var bits = [];
+      bits.push("知识库生效 " + (kb.effectiveBase || "—") + (kb.effectiveHasKey ? "（key 已配）" : "（key 未配 ⇒ 知识库不可用）"));
+      bits.push("记忆生效 " + (mem.effectiveBase || "—") + " / 代理 " + (mem.effectiveProxyBase || "—") + (mem.effectiveHasKey ? "（key 已配）" : "（key 未配）"));
+      if (!kb.base && kb.envBase) bits.push("知识库走环境变量 " + kb.envBase);
+      $("svcInfo").textContent = bits.join(" · ");
+    }).catch(function () { svcSay("读取失败：网络错误", "bad"); });
+  }
+  function svcRenderTest(j) {
+    var box = $("svcTestResult"); if (!box) return;
+    box.style.display = "";
+    var rows = (j.probes || []).map(function (p) {
+      var col = p.ok ? "var(--ok)" : "var(--bad)";
+      return '<div style="padding:7px 0;border-top:1px solid var(--line-soft)">'
+        + '<b style="color:' + col + '">' + (p.ok ? "✓" : "✗") + " " + esc(p.name) + "</b>"
+        + '<span class="hint" style="margin-left:6px">HTTP ' + (p.status || "—") + " · " + p.ms + "ms" + (p.count != null ? " · " + p.count + " 条" : "") + "</span>"
+        + (p.hint ? '<div class="hint" style="margin-top:3px">' + esc(p.hint) + "</div>" : "") + "</div>";
+    }).join("");
+    box.innerHTML = '<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field)">'
+      + '<div style="font-weight:600;color:' + (j.ok ? "var(--ok)" : "var(--bad)") + '">' + esc(j.message || "") + "</div>"
+      + '<div class="hint" style="margin:4px 0 6px">地址 ' + esc(j.base) + " · 总耗时 " + j.elapsedMs + "ms"
+      + (j.warning ? " · ⚠️ " + esc(j.warning) : "") + (j.hasKey ? "" : " · 未带密钥") + "</div>" + rows + "</div>";
+  }
+  function svcTest(which) {
+    var baseInput = which === "kb" ? $("svcKbBase") : $("svcMemBase");
+    var keyInput = which === "kb" ? $("svcKbKey") : $("svcMemKey");
+    svcSay("测试中（最多约 8 秒）…");
+    api("/admin/services/test", { method: "POST", body: { which: which, base: baseInput.value.trim(), key: keyInput.value.trim() } }).then(function (r) {
+      var j = r.j || {};
+      if (!r.ok || !j.probes) { svcSay("测试失败：" + (j.error || ("HTTP " + r.status)), "bad"); return; }
+      svcRenderTest(j);
+      svcSay(j.ok ? "连通性正常" : "不可达（看下方逐行原因）", j.ok ? "ok" : "bad");
+    }).catch(function () { svcSay("测试失败：网络错误", "bad"); });
+  }
+  if ($("svcTestKb")) $("svcTestKb").onclick = function () { svcTest("kb"); };
+  if ($("svcTestMem")) $("svcTestMem").onclick = function () { svcTest("memory"); };
+  if ($("svcSave")) $("svcSave").onclick = function () {
+    var btn = $("svcSave"); btn.disabled = true; svcSay("保存中…");
+    api("/admin/services", { method: "POST", body: {
+      kb: {
+        base: $("svcKbBase").value.trim(), key: $("svcKbKey").value.trim(),
+        llmModelId: $("svcKbLlm").value.trim(), embedModelId: $("svcKbEmbed").value.trim(), vlmModelId: $("svcKbVlm").value.trim(),
+      },
+      memory: {
+        base: $("svcMemBase").value.trim(), proxyBase: $("svcMemProxy").value.trim(),
+        key: $("svcMemKey").value.trim(), instance: $("svcMemInstance").value.trim(),
+      },
+    } }).then(function (r) {
+      btn.disabled = false;
+      if (r.ok && r.j && r.j.ok) { svcSay("已保存并热生效（下一次知识库/记忆调用即走新地址）", "ok"); loadServices(); }
+      else { svcSay("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+    }).catch(function () { btn.disabled = false; svcSay("保存失败：网络错误", "bad"); });
+  };
+
+  /* ── 邀请码（管理员）：生成 / 记录 / 账号明细 / 额度监控 ── */
+  var ivInvites = [];
+  function ivSay(text, cls) { var st = $("ivStatus"); st.textContent = text || ""; st.className = "status" + (cls ? " " + cls : ""); }
+  function ivStatusOf(i) {
+    if (i.disabled) return ["已停用", "bad"];
+    if (i.expired) return ["已过期", "bad"];
+    if (i.maxUses !== 0 && i.usedCount >= i.maxUses) return ["额度用尽", "warn"];
+    return ["生效", "ok"];
+  }
+  function loadInvites() {
+    api("/admin/invites").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { ivSay("邀请码读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
+      ivInvites = r.j.invites || [];
+      var t = r.j.totals || {};
+      /* ⛔ 拆成独立 chip：上一版是一整串长句挤在按钮右边，窄屏直接乱行（用户 10-16 截图）。 */
+      $("ivTotals").innerHTML =
+        "<span>邀请码 <b>" + (t.codes || 0) + "</b> 个（生效 <b>" + (t.activeCodes || 0) + "</b>）</span>" +
+        "<span>累计注册 <b>" + (t.uses || 0) + "</b> 次</span>" +
+        "<span>有来源的账号 <b>" + (t.accounts || 0) + "</b> 个</span>" +
+        (r.j.inviteRequired
+          ? "<span class='pill ok'>注册需要邀请码</span>"
+          : "<span class='pill bad'>⚠ 当前无码也无主码，注册仍开放</span>");
+      renderInvites();
+    }).catch(function () { ivSay("网络错误", "bad"); });
+  }
+  function renderInvites() {
+    var box = $("ivRows"); box.innerHTML = "";
+    if (!ivInvites.length) {
+      var tr0 = document.createElement("tr"), td0 = document.createElement("td");
+      td0.colSpan = 8; td0.className = "hint"; td0.textContent = "还没有邀请码 —— 上面填个备注生成一个，之后注册就必须带码。";
+      tr0.appendChild(td0); box.appendChild(tr0); return;
+    }
+    ivInvites.forEach(function (i) {
+      var tr = document.createElement("tr");
+      tr.appendChild(Object.assign(document.createElement("td"), { innerHTML: '<code style="font-size:12.5px">' + i.code + "</code>" }));
+      tr.appendChild(Object.assign(document.createElement("td"), { textContent: i.note || "—" }));
+      var pct = i.maxUses === 0 ? null : Math.round(Math.min(1, i.usedCount / i.maxUses) * 100);
+      tr.appendChild(Object.assign(document.createElement("td"), {
+        innerHTML: "<b>" + i.usedCount + "</b> / " + (i.maxUses === 0 ? "不限" : i.maxUses) +
+          (pct === null ? "" : '<div style="height:4px;border-radius:3px;background:var(--line);margin-top:4px"><div style="height:100%;width:' + pct + '%;border-radius:3px;background:var(--ok)"></div></div>'),
+      }));
+      var tdReg = Object.assign(document.createElement("td"), { textContent: String(i.registeredCount) });
+      if (i.registeredCount !== i.usedCount) tdReg.title = "累计用过 " + i.usedCount + " 次，现存 " + i.registeredCount + " 个账号（差额 " + (i.usedCount - i.registeredCount) + " 个已被删除；额度不回收）";
+      tr.appendChild(tdReg);
+      var st = ivStatusOf(i);
+      tr.appendChild(Object.assign(document.createElement("td"), { innerHTML: '<span class="pill ' + st[1] + '">' + st[0] + "</span>" }));
+      tr.appendChild(Object.assign(document.createElement("td"), { textContent: i.expiresAt ? fmt(i.expiresAt) : "永久" }));
+      tr.appendChild(Object.assign(document.createElement("td"), { textContent: i.lastUsedAt ? fmt(i.lastUsedAt) : "—" }));
+      var ops = document.createElement("div"); ops.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
+      var mk = function (text, fn) { var b = document.createElement("button"); b.className = "btn sm"; b.textContent = text; b.onclick = fn; return b; };
+      ops.appendChild(mk("复制", function () {
+        try { navigator.clipboard.writeText(i.code); ivSay("已复制 " + i.code + " —— 发给要注册的人即可", "ok"); }
+        catch (e) { ivSay("复制失败，请手动选中 " + i.code, "bad"); }
+      }));
+      ops.appendChild(mk("账号", function () { loadInviteAccounts(i.code); }));
+      ops.appendChild(mk("改额度", function () {
+        var v = window.prompt("「" + i.code + "」新的可用次数（0 = 不限）：", String(i.maxUses));
+        if (v === null) return;
+        api("/admin/invites/update", { method: "POST", body: { code: i.code, maxUses: Number(v) } }).then(function (r) {
+          if (r.ok && r.j && r.j.ok) { ivSay("已把 " + i.code + " 的名额改为 " + (Number(v) === 0 ? "不限" : v), "ok"); loadInvites(); }
+          else ivSay("改额度失败：" + ((r.j && r.j.error) || r.status), "bad");
+        }).catch(function () { ivSay("网络错误", "bad"); });
+      }));
+      ops.appendChild(mk(i.disabled ? "恢复" : "停用", function () {
+        api("/admin/invites/update", { method: "POST", body: { code: i.code, disabled: !i.disabled } }).then(function (r) {
+          if (r.ok && r.j && r.j.ok) { ivSay("已" + (i.disabled ? "恢复" : "停用") + " " + i.code + (i.disabled ? "" : "（已注册账号不受影响）"), "ok"); loadInvites(); }
+          else ivSay("操作失败：" + ((r.j && r.j.error) || r.status), "bad");
+        }).catch(function () { ivSay("网络错误", "bad"); });
+      }));
+      var tdOps = document.createElement("td"); tdOps.appendChild(ops); tr.appendChild(tdOps);
+      box.appendChild(tr);
+      var detail = document.createElement("tr"); detail.id = "ivDetail-" + i.code; detail.hidden = true;
+      var tdD = document.createElement("td"); tdD.colSpan = 8; detail.appendChild(tdD); box.appendChild(detail);
+    });
+  }
+  function loadInviteAccounts(code) {
+    var holder = $("ivDetail-" + code);
+    if (!holder) return;
+    if (!holder.hidden) { holder.hidden = true; return; }
+    var td = holder.firstChild;
+    holder.hidden = false; td.innerHTML = '<span class="hint">读取中…</span>';
+    api("/admin/invites/accounts?code=" + encodeURIComponent(code)).then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { td.innerHTML = '<span class="hint">读取失败</span>'; return; }
+      var rows = r.j.accounts || [];
+      if (!rows.length) { td.innerHTML = '<span class="hint">这个码还没有注册过账号。</span>'; return; }
+      td.innerHTML = '<div class="hint" style="margin-bottom:6px">「' + code + '」注册的账号（累计使用 ' + r.j.usedCount + ' 次，现存 ' + rows.length + ' 个）：</div>' +
+        rows.map(function (a) {
+          return '<div style="display:flex;gap:14px;align-items:center;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px">' +
+            '<b style="min-width:150px">' + a.username + "</b>" +
+            '<span class="hint">注册 ' + fmt(a.createdAt) + "</span>" +
+            '<span class="hint">最近登录 ' + fmt(a.lastLogin) + "</span>" +
+            '<span class="hint">积分 ' + Number(a.balance || 0).toFixed(2).replace(/\.00$/, "") + "</span>" +
+            (a.disabled ? '<span class="pill bad">已停用</span>' : "") + "</div>";
+        }).join("");
+    }).catch(function () { td.innerHTML = '<span class="hint">网络错误</span>'; });
+  }
+  if ($("ivCreate")) $("ivCreate").onclick = function () {
+    var btn = $("ivCreate"); btn.disabled = true;
+    api("/admin/invites", { method: "POST", body: { note: $("ivNote").value.trim(), maxUses: Number($("ivUses").value), expiresInDays: Number($("ivDays").value) } })
+      .then(function (r) {
+        btn.disabled = false;
+        if (r.ok && r.j && r.j.ok) { $("ivNote").value = ""; ivSay("已生成邀请码 " + r.j.invite.code + " —— 发给要注册的人即可", "ok"); loadInvites(); }
+        else ivSay("生成失败：" + ((r.j && r.j.error) || r.status), "bad");
+      }).catch(function () { btn.disabled = false; ivSay("网络错误", "bad"); });
+  };
+  if ($("ivRefresh")) $("ivRefresh").onclick = loadInvites;
+
+  /* ── 模型管理（管理员：倍率 + 每用户可用模型）── */
+  var amData = null;
+  function amSay(text, cls) { var st = $("amStatus"); st.textContent = text; st.className = "status" + (cls ? " " + cls : ""); }
+  function loadAdminModels() {
+    api("/admin/models").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { amSay("模型目录读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
+      amData = r.j;
+      /* 倍率表 */
+      var box = $("amRows"); box.innerHTML = "";
+      (r.j.list || []).forEach(function (m) {
+        var tr = document.createElement("tr");
+        tr.appendChild(Object.assign(document.createElement("td"), { textContent: m.name || m.id }));
+        var tdId = document.createElement("td");
+        tdId.appendChild(Object.assign(document.createElement("code"), { textContent: m.id, style: "font-size:12px;color:var(--muted)" }));
+        tr.appendChild(tdId);
+        var tdCur = document.createElement("td");
+        if (m.creditsMissing && !m.creditsLocked) {
+          /* ⛔ 从 OpenAI 兼容目录拉来的模型**上游没给倍率** ⇒ 现在是免费。
+             必须明说「未设倍率」，⛔ 不能显示成「免费 / 跟随上游」——那会让人以为它本来就免。 */
+          tdCur.appendChild(Object.assign(document.createElement("span"), { textContent: "未设倍率", style: "color:var(--warn);font-weight:600" }));
+          tdCur.appendChild(Object.assign(document.createElement("span"), {
+            textContent: "当前免费", className: "pill", title: "该模型的目录来自 OpenAI 兼容 /v1/models，上游没有倍率字段 —— 请在这一行填一个倍率，否则调用不扣分",
+            style: "margin-left:6px;font-size:11px;background:var(--warn-soft);color:var(--warn)",
+          }));
+        } else if (m.creditsLocked) {
+          tdCur.appendChild(Object.assign(document.createElement("span"), { textContent: m.credits || "免费" }));
+          tdCur.appendChild(Object.assign(document.createElement("span"), { textContent: "已钉", className: "pill ok", style: "margin-left:6px;font-size:11px" }));
+        } else {
+          tdCur.appendChild(Object.assign(document.createElement("span"), { textContent: m.credits ? m.credits : "免费" }));
+          tdCur.appendChild(Object.assign(document.createElement("span"), { textContent: "跟随上游", style: "margin-left:6px;font-size:11px;color:var(--muted)" }));
+        }
+        tr.appendChild(tdCur);
+        var tdSet = document.createElement("td");
+        var wrap = document.createElement("div"); wrap.style.cssText = "display:flex;gap:6px;align-items:center";
+        var inp = document.createElement("input");
+        inp.type = "text"; inp.placeholder = "如 0.29，空=免费";
+        inp.value = m.credits ? String(m.credits).replace(/^x/i, "") : "";
+        inp.style.cssText = "width:110px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px";
+        /* 闲时**倍率**（**每模型**，10-18 用户令「每个模型单独的配置」）——
+           ⛔⛔ 语义是**替换**不是折扣：高峰 0.11、这里填 0.05 ⇒ 闲时直接按 0.05 计费
+              （不是 0.11×0.05）。用户原话「不是我填 0.5 就打 5 折」。
+           ⛔ 与倍率共用右边那个「保存」按钮：一行一个动作。分两个按钮必然出现
+              「只存了倍率、闲时没存」的错觉（两个请求还可能一成一败）。
+           ⛔ 空串必须**显式提交**：服务端把空串当"清除=不设"，不传则是"这次不改"——
+              两者语义不同，漏传会让旧值永远清不掉。 */
+        var opInp = document.createElement("input");
+        opInp.type = "text"; opInp.placeholder = "如 0.05，空=不设";
+        opInp.value = (m.offPeakRate === undefined || m.offPeakRate === null) ? "" : String(m.offPeakRate);
+        opInp.style.cssText = inp.style.cssText;
+        var go = document.createElement("button"); go.className = "btn sm"; go.textContent = "保存";
+        go.onclick = function () {
+          go.disabled = true;
+          api("/admin/models/credits", { method: "POST", body: { id: m.id, credits: inp.value.trim(), offPeakRate: opInp.value.trim() } }).then(function (x) {
+            go.disabled = false;
+            if (x.ok && x.j && x.j.ok) {
+              var opTxt = (x.j.offPeakRate === null || x.j.offPeakRate === undefined) ? "不设（闲时沿用高峰倍率）" : String(x.j.offPeakRate);
+              amSay((m.name || m.id) + " 的高峰倍率设为 " + (x.j.credits || "免费") + "、闲时倍率 " + opTxt + "（已钉，同步不会覆盖）", "ok");
+              loadAdminModels();
+            }
+            else amSay("保存失败：" + ((x.j && x.j.error) || x.status), "bad");
+          }).catch(function () { go.disabled = false; amSay("网络错误", "bad"); });
+        };
+        wrap.appendChild(inp); wrap.appendChild(go);
+        if (m.creditsLocked) {
+          var rs = document.createElement("button"); rs.className = "btn sm"; rs.textContent = "恢复上游";
+          rs.title = "清除自定义值，改回上游目录里的倍率";
+          rs.onclick = function () {
+            rs.disabled = true;
+            api("/admin/models/credits", { method: "POST", body: { id: m.id, reset: true } }).then(function (x) {
+              rs.disabled = false;
+              if (x.ok && x.j && x.j.ok) { amSay((m.name || m.id) + " 已恢复为上游倍率 " + (x.j.credits || "免费"), "ok"); loadAdminModels(); }
+              else amSay("恢复失败：" + ((x.j && x.j.error) || x.status), "bad");
+            }).catch(function () { rs.disabled = false; amSay("网络错误", "bad"); });
+          };
+          wrap.appendChild(rs);
+        }
+        tdSet.appendChild(wrap); tr.appendChild(tdSet);
+        /* 「闲时倍率」：该模型在闲时时段生效的**倍率**。单独设过就显示数值，否则「未单独设」
+           （= 沿用高峰倍率，该时段不优惠）。⛔ 不写「跟随全局」—— 现在只有**时段**是全局的。 */
+        var tdOpCur = document.createElement("td");
+        if (m.offPeakRate === undefined || m.offPeakRate === null) {
+          tdOpCur.appendChild(Object.assign(document.createElement("span"), { textContent: "未单独设", style: "color:var(--muted)" }));
+        } else {
+          tdOpCur.appendChild(Object.assign(document.createElement("span"), { textContent: String(m.offPeakRate) }));
+          tdOpCur.appendChild(Object.assign(document.createElement("span"), { textContent: "闲时", className: "pill ok", style: "margin-left:6px;font-size:11px" }));
+        }
+        tr.appendChild(tdOpCur);
+        /* 「闲时改为」的输入框挂在这格，但保存按钮在左两格 —— 提交时一起读（见上面的 go.onclick） */
+        var tdOpSet = document.createElement("td");
+        tdOpSet.appendChild(opInp);
+        tr.appendChild(tdOpSet);
+        box.appendChild(tr);
+      });
+      /* 用户下拉 */
+      renderUserModels();
+    });
+  }
+  /* 本卡作用于**全部用户**（用户令：不用加用户选择）——
+     勾选态以「第一个有配置的用户」为模板展示，保存时整集覆盖到所有账号。 */
+  /* 勾选态 = **对用户开放的目录**（modelCatalog.available）。
+     未设置过（null）⇒ 视为全部开放，避免首次进页面全空。 */
+  function currentUserIds() {
+    if (!amData) return [];
+    var avail = amData.available;
+    if (Array.isArray(avail)) return avail;
+    return (amData.list || []).map(function (m) { return m.id; });
+  }
+  function renderUserModels() {
+    if (!amData) return;   /* 用户下拉已移除：本卡作用于全部用户 */
+    var ids = currentUserIds();
+    var box = $("amUserModels"); box.innerHTML = "";
+    (amData.list || []).forEach(function (m) {
+      var lab = document.createElement("label");
+      lab.style.cssText = "display:flex;align-items:center;gap:7px;font-size:12.5px;padding:3px 0";
+      var cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = m.id; cb.checked = ids.indexOf(m.id) >= 0;
+      cb.style.cssText = "width:15px;height:15px;accent-color:var(--brand)";
+      lab.appendChild(cb);
+      lab.appendChild(Object.assign(document.createElement("span"), { textContent: (m.name || m.id) + (m.credits ? " · " + m.credits : " · 免费") }));
+      box.appendChild(lab);
+    });
+    $("amUserInfo").textContent = "已开放 " + ids.length + " / " + ((amData.list || []).length) + " 个模型（用户端可自行勾选）";
+  }
+  function amCollect() {
+    return Array.prototype.slice.call(document.querySelectorAll("#amUserModels input[type=checkbox]"))
+      .filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+  }
+  /* 导出模型池（10-18 用户令「模型池需支持同步导出」）：把 id / 名称 / 高峰倍率 / **上游原值** /
+     是否已钉 / 闲时倍率 / 是否对用户开放 导成 JSON —— 备份、或迁移到别人的部署都用它。
+     ⛔ 导出前**重新拉一次**目录：用页面里的旧快照会导出一份已经过期的倍率。 */
+  if ($("amExport")) $("amExport").onclick = function () {
+    var btn = $("amExport"); btn.disabled = true; amSay("正在导出…");
+    api("/admin/models").then(function (r) {
+      btn.disabled = false;
+      if (!r.ok || !r.j || !r.j.ok) { amSay("导出失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
+      var open = new Set(Array.isArray(r.j.available) ? r.j.available : []);
+      var payload = {
+        exportedAt: new Date().toISOString(),
+        syncedAt: r.j.syncedAt || 0,
+        source: r.j.source || "",
+        models: (r.j.list || []).map(function (m) {
+          return {
+            id: m.id,
+            name: m.name || "",
+            rate: m.credits || "",                  // 高峰倍率（当前生效值）
+            upstreamRate: m.upstreamCredits || "",  // 上游原值（"恢复上游"用的快照）
+            locked: m.creditsLocked === true,
+            offPeakRate: (m.offPeakRate === undefined || m.offPeakRate === null) ? null : m.offPeakRate,
+            openToUsers: open.has(m.id),
+          };
+        }),
+      };
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "model-pool-" + new Date().toISOString().slice(0, 10) + ".json";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+      amSay("已导出 " + payload.models.length + " 个模型（含上游倍率与闲时倍率）", "ok");
+    }).catch(function () { btn.disabled = false; amSay("导出失败：网络错误", "bad"); });
+  };
+  if ($("amSync")) $("amSync").onclick = function () {
+    $("amSync").disabled = true; amSay("正在同步目录…");
+    api("/admin/models/sync", { method: "POST" }).then(function (x) {
+      $("amSync").disabled = false;
+      if (x.ok && x.j && x.j.ok) { amSay("目录已同步，共 " + ((x.j.list || []).length || x.j.total || 0) + " 个模型", "ok"); loadAdminModels(); }
+      else { amSay("同步失败：" + ((x.j && x.j.error) || x.status) + "（已保留现有目录）", "bad"); loadAdminModels(); }
+    }).catch(function () { $("amSync").disabled = false; amSay("网络错误", "bad"); });
+  };
+
+  /* 刷新模型列表：重新拉服务端目录，和当前列表对比，弹小提示告知新增/减少。
+     （用户令：后面有新增模型时要能刷新，刷新完给个提醒） */
+  function amToast(text, kind) {
+    var el2 = $("amToast"); if (!el2) return;
+    el2.textContent = text;
+    el2.style.display = "block";
+    el2.style.background = kind === "warn"
+      ? "var(--warn-soft,#fef3e2)" : "var(--ok-soft,#e8f5ec)";
+    el2.style.color = kind === "warn" ? "var(--warn,#b45309)" : "var(--ok,#1a7f37)";
+    clearTimeout(window.__amToastTimer);
+    window.__amToastTimer = setTimeout(function () { el2.style.display = "none"; }, 6000);
+  }
+  if ($("amRefresh")) $("amRefresh").onclick = function () {
+    var btn = $("amRefresh");
+    var before = ((amData || {}).list || []).map(function (m) { return m.id; });
+    btn.disabled = true; btn.textContent = "刷新中…";
+    api("/admin/models/sync", { method: "POST" }).then(function (x) {
+      btn.disabled = false; btn.textContent = "刷新模型列表";
+      if (!(x.ok && x.j && x.j.ok)) {
+        amSay("刷新失败：" + ((x.j && x.j.error) || x.status) + "（已保留现有目录）", "bad");
+        amToast("刷新失败，已保留现有列表", "warn");
+        return loadAdminModels();
+      }
+      var after = (x.j.list || []).map(function (m) { return m.id; });
+      var added = after.filter(function (id) { return before.indexOf(id) < 0; });
+      var removed = before.filter(function (id) { return after.indexOf(id) < 0; });
+      var parts = [];
+      if (added.length) parts.push("新增 " + added.length + " 个：" + added.slice(0, 5).join(", ") + (added.length > 5 ? " 等" : ""));
+      if (removed.length) parts.push("下线 " + removed.length + " 个");
+      amToast(parts.length ? "✓ 已刷新（" + parts.join("；") + "）" : "✓ 已刷新，目录无变化（共 " + after.length + " 个模型）",
+        removed.length ? "warn" : "ok");
+      loadAdminModels();
+    }).catch(function () {
+      btn.disabled = false; btn.textContent = "刷新模型列表";
+      amToast("刷新失败（网络错误），已保留现有列表", "warn");
+    });
+  };
+
+  if ($("amAll")) $("amAll").onclick = function () { Array.prototype.forEach.call(document.querySelectorAll("#amUserModels input[type=checkbox]"), function (c) { c.checked = true; }); };
+  if ($("amNone")) $("amNone").onclick = function () { Array.prototype.forEach.call(document.querySelectorAll("#amUserModels input[type=checkbox]"), function (c) { c.checked = false; }); };
+  if ($("amSaveUser")) $("amSaveUser").onclick = function () {
+    var ids = amCollect();
+    if (!window.confirm("把这 " + ids.length + " 个模型设为**对用户开放**？\n（只影响用户端能看到/可选的模型，不会改动他们各自的勾选）")) return;
+    $("amSaveUser").disabled = true;
+    api("/admin/models/available", { method: "POST", body: { ids: ids } }).then(function (x) {
+      $("amSaveUser").disabled = false;
+      if (x.ok && x.j && x.j.ok) { amSay("已开放 " + ids.length + " 个模型（用户端刷新后可见，可自行勾选）", "ok"); amToast("✓ 已保存：用户端刷新后能看到这 " + ids.length + " 个模型（勾选由用户自己决定）"); loadAdminModels(); }
+      else amSay("保存失败：" + ((x.j && x.j.error) || x.status), "bad");
+    }).catch(function () { $("amSaveUser").disabled = false; amSay("网络错误", "bad"); });
+  };
+
+  /* ── 闲时时段（管理员：定义"哪些时间算闲时" + 可选的默认倍率）
+     ⛔⛔ 10-18 语义修正：`rate` 是**直接倍率**，不是折扣系数（高峰 0.11、闲时 0.05 ⇒ 按 0.05 扣）。
+     前端只做"收集/回显"；时段合法性由服务端再校验一遍（信任边界）。 */
+  var opData = null;
+  function opSay(text, cls) { var st = $("opStatus"); if (!st) return; st.textContent = text; st.className = "status" + (cls ? " " + cls : ""); }
+  function opInput(value, type, width, ph) {
+    var inp = document.createElement("input");
+    inp.type = type; inp.value = String(value === undefined || value === null ? "" : value);
+    if (ph) inp.placeholder = ph;
+    if (type === "number") inp.step = "any";
+    inp.style.cssText = "width:" + width + "px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px";
+    return inp;
+  }
+  function opAddRow(w) {
+    w = w || {};
+    var box = $("opRows"); if (!box) return;
+    var tr = document.createElement("tr");
+    if (w.id) tr.setAttribute("data-id", String(w.id));
+    var tdLabel = document.createElement("td"); tdLabel.appendChild(opInput(w.label || "", "text", 110, "如 夜间")); tr.appendChild(tdLabel);
+    var tdS = document.createElement("td"); tdS.appendChild(opInput(w.start === undefined ? 0 : w.start, "number", 80, "0")); tr.appendChild(tdS);
+    var tdE = document.createElement("td"); tdE.appendChild(opInput(w.end === undefined ? 0 : w.end, "number", 80, "8")); tr.appendChild(tdE);
+    /* ⛔ 默认**留空**（= 该时段不设默认倍率，没单独设的模型沿用高峰倍率）。
+       绝不预填 0.5 —— 旧语义下 0.5 是"5 折"，新语义下它就是"倍率 0.5"（会把 0.11 的模型涨 4.5 倍）。 */
+    var tdR = document.createElement("td"); tdR.appendChild(opInput(w.rate === undefined || w.rate === null ? "" : w.rate, "number", 90, "留空=不优惠")); tr.appendChild(tdR);
+    var tdX = document.createElement("td");
+    var del = document.createElement("button"); del.className = "btn sm"; del.textContent = "删除";
+    del.onclick = function () { box.removeChild(tr); opSay("已删除一行，点「保存」后生效"); };
+    tdX.appendChild(del); tr.appendChild(tdX);
+    box.appendChild(tr);
+  }
+  function opReadRows() {
+    var out = [];
+    Array.prototype.forEach.call(document.querySelectorAll("#opRows tr"), function (tr) {
+      var i = tr.querySelectorAll("input");
+      if (i.length < 4) return;
+      out.push({
+        id: tr.getAttribute("data-id") || "",
+        label: i[0].value.trim(), start: Number(i[1].value), end: Number(i[2].value),
+        /* ⛔⛔ 留空必须传 **null**，不能 `Number("")` —— 那是 0，等于该时段所有没单独设的模型**免费**白送。
+           （新语义下"默认倍率"是可选的；空 = 不设默认，用各自的高峰倍率。） */
+        rate: i[3].value.trim() === "" ? null : Number(i[3].value),
+      });
+    });
+    return out;
+  }
+  /* 表头「高峰倍率 ?」「闲时倍率 ?」的说明：按**当前时段配置**生成。
+     ⛔ 时段是管理员可改的，文案写死就迟早对不上（到时候又变成"说明在骗人"）。 */
+  function applyOffPeakTips(windows) {
+    var wins = Array.isArray(windows) ? windows : [];
+    var txt = wins.length
+      ? wins.map(function (w) { return (w.label || "时段") + " " + w.start + "–" + w.end + " 点"; }).join("、")
+      : "（尚未设置任何闲时时段）";
+    /* 标题行那一小段的摘要（用户令：精简成选项、不占一张卡）——空配置时说"未设置"，不装作有 */
+    var sum = $("opSummary");
+    if (sum) sum.textContent = wins.length ? txt : "未设置";
+    var head = $("qmOffPeak");
+    if (head) head.title = "闲时时段：" + txt
+      + "\n（按服务器时间；起点含、终点不含；跨零点用 start>end 表示）\n"
+      + "这里只定义「哪些时间算闲时」—— 倍率在表格的「闲时改为」列按模型填。\n"
+      + "「启用」只影响没单独设的模型；单独设过的模型一律按自己的值。\n"
+      + "⛔ 闲时倍率是直接倍率、不是折扣：高峰 0.11、闲时填 0.05 ⇒ 闲时按 0.05 扣。";
+    var off = $("qmOff");
+    if (off) off.title = "闲时时段：" + txt
+      + "（按服务器时间；起点含、终点不含；跨零点用 start>end 表示）\n"
+      + "命中时段 ⇒ 该模型按「闲时倍率」计费；这一列没填 ⇒ 该时段若有默认倍率就用它，否则沿用高峰倍率。\n"
+      + "⛔ 闲时倍率是直接倍率、不是折扣：高峰 0.11、闲时填 0.05 ⇒ 闲时按 0.05 扣（不是 0.11×0.05）。";
+    var peak = $("qmPeak");
+    if (peak) peak.title = "高峰时段 = 上面那些闲时时段之外的所有时间。\n"
+      + "当前闲时：" + txt + "\n"
+      + "高峰时按这一列的倍率计费（= 模型目录里的基准倍率，可在此直接改）。";
+  }
+  function opShowNow(d) {
+    applyOffPeakTips(d && d.windows);
+    var el = $("opNow"); if (!el) return;
+    d = d || opData || {};
+    var hour = d.serverHour === undefined ? new Date().getHours() : d.serverHour;
+    var a = d.active;
+    var status = d.enabled === true
+      ? (a
+        ? "命中「" + (a.label || "时段") + "」" + (a.rate === null || a.rate === undefined ? "（该时段未设默认倍率，各模型按自己的闲时倍率）" : "，默认倍率 " + a.rate)
+        : "未命中任何时段")
+      : "总闸已关（只影响没单独设闲时倍率的模型）";
+    el.textContent = "服务器现在 " + hour + " 点 · " + status;
+  }
+  function loadOffPeak() {
+    api("/admin/offpeak").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { opSay("闲时倍率读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
+      opData = r.j;
+      $("opEnabled").checked = r.j.enabled === true;
+      var box = $("opRows"); box.innerHTML = "";
+      (r.j.windows || []).forEach(opAddRow);
+      opShowNow(r.j);
+      opSay("");
+    }).catch(function () { opSay("闲时倍率读取失败：网络错误", "bad"); });
+  }
+  /* 「设置」展开/收起时段编辑区（默认折叠 —— 用户令：精简成选项，不占版面） */
+  if ($("opEdit")) $("opEdit").onclick = function () {
+    var box = $("opEditor"); if (!box) return;
+    var willOpen = box.style.display === "none";
+    box.style.display = willOpen ? "" : "none";
+    this.textContent = willOpen ? "收起" : "设置";
+  };
+  if ($("opAdd")) $("opAdd").onclick = function () { opAddRow({ label: "", start: 0, end: 0, rate: null }); opSay("已加一行，填好时段后点「保存」（默认倍率可留空）"); };
+  if ($("opEnabled")) $("opEnabled").onchange = function () { opSay($("opEnabled").checked ? "开关已打开，点「保存」后生效" : "开关已关闭，点「保存」后生效"); };
+  if ($("opSave")) $("opSave").onclick = function () {
+    var rows = opReadRows();
+    if ($("opEnabled").checked && !rows.length) { opSay("启用了但没有任何时段 —— 请先添加时段，或取消勾选「启用」", "bad"); return; }
+    var btn = $("opSave"); btn.disabled = true; opSay("保存中…");
+    api("/admin/offpeak", { method: "POST", body: { enabled: $("opEnabled").checked, windows: rows } }).then(function (x) {
+      btn.disabled = false;
+      if (x.ok && x.j && x.j.ok) {
+        opData = x.j; opShowNow(x.j);
+        opSay("已保存：" + (x.j.enabled ? "启用" : "停用") + "，共 " + (x.j.windows || []).length + " 个时段（下一条调用即按新规则）", "ok");
+      } else opSay("保存失败：" + ((x.j && x.j.error) || x.status), "bad");
+    }).catch(function () { btn.disabled = false; opSay("保存失败：网络错误", "bad"); });
+  };
+
+  /* ── 积分管理（发放 / 扣减）── */
+  function loadAdminPoints(q) {
+    var box = $("apRows"); if (!box) return;
+    box.innerHTML = "";
+    api("/admin/points" + (q ? "?q=" + encodeURIComponent(q) : "")).then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { auSay("积分读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
+      $("apSummary").textContent = "共 " + r.j.total + " 个账号 · 注册赠送 " + r.j.signupGrant;
+      if (!r.j.users.length) { box.appendChild(Object.assign(document.createElement("tr"), { innerHTML: '<td colspan="5" class="hint">没有匹配的账号</td>' })); return; }
+      r.j.users.forEach(function (u) {
+        var tr = document.createElement("tr");
+        function td(text) { var d = document.createElement("td"); d.textContent = text; return d; }
+        var tdName = document.createElement("td");
+        tdName.appendChild(Object.assign(document.createElement("span"), { className: "name", textContent: u.username }));
+        if (u.disabled) tdName.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: " （已停用）" }));
+        tr.appendChild(tdName);
+        tr.appendChild(td(Number(u.balance).toFixed(2).replace(/\.00$/, "")));
+        tr.appendChild(td(u.txnCount + " 条"));
+        tr.appendChild(td(u.lastAt ? fmt(u.lastAt) + " · " + u.lastNote : "—"));
+        var tdOps = document.createElement("td");
+        var wrap = document.createElement("div"); wrap.style.cssText = "display:flex;gap:6px;align-items:center";
+        var amt = document.createElement("input");
+        amt.type = "number"; amt.placeholder = "如 500 / -100"; amt.value = "500";
+        amt.style.cssText = "width:100px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px";
+        var note = document.createElement("input");
+        note.placeholder = "备注（可选）";
+        note.style.cssText = "width:130px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px";
+        var go = document.createElement("button"); go.className = "btn"; go.textContent = "发放";
+        go.onclick = function () {
+          var delta = Number(amt.value);
+          if (!Number.isFinite(delta) || delta === 0) { auSay("请输入非 0 的分值", "bad"); return; }
+          go.disabled = true;
+          api("/admin/points/grant", { method: "POST", body: { username: u.username, delta: delta, note: note.value } }).then(function (x) {
+            go.disabled = false;
+            if (x.ok && x.j && x.j.ok) { auSay("已给 " + u.username + " 发放 " + delta + "，余额 " + x.j.balance, "ok"); loadAdminPoints($("apq").value.trim()); }
+            else { auSay("发放失败：" + ((x.j && x.j.error) || x.status), "bad"); }
+          }).catch(function () { go.disabled = false; auSay("网络错误", "bad"); });
+        };
+        wrap.appendChild(amt); wrap.appendChild(note); wrap.appendChild(go);
+        tdOps.appendChild(wrap); tr.appendChild(tdOps);
+        box.appendChild(tr);
+      });
+    });
+  }
+  if ($("apSearch")) $("apSearch").onclick = function () { loadAdminPoints($("apq").value.trim()); };
+  if ($("apq")) $("apq").addEventListener("keydown", function (e) { if (e.key === "Enter") loadAdminPoints($("apq").value.trim()); });
+  if ($("apAll")) $("apAll").onclick = function () { $("apq").value = ""; loadAdminPoints(""); };
+
+  /* ── 改密 ─────────────────────────────────────────────────────── */
+  $("pwSave").onclick = function () {
+    var st = $("pwStatus"); st.className = "status";
+    var a = $("pwOld").value, b = $("pwNew").value, c = $("pwNew2").value;
+    if (b.length < 8) { st.textContent = "新密码至少 8 位"; st.className = "status bad"; return; }
+    if (b !== c) { st.textContent = "两次输入的新密码不一致"; st.className = "status bad"; return; }
+    var btn = $("pwSave"); btn.disabled = true;
+    api("/password", { method: "POST", body: { oldPassword: a, newPassword: b } }).then(function (r) {
+      btn.disabled = false;
+      if (r.ok && r.j && r.j.ok) { st.textContent = "已修改 ✓"; st.className = "status ok"; $("pwOld").value = $("pwNew").value = $("pwNew2").value = ""; }
+      else { st.textContent = (r.j && r.j.error) || "修改失败"; st.className = "status bad"; }
+    }).catch(function () { btn.disabled = false; st.textContent = "网络错误"; st.className = "status bad"; });
+  };
+
+  /* ── 配对中心：本机助手探测 ───────────────────────────────────── */
+  var agentState = null;
+  function probeAgent() {
+    var pill = $("agentPill"); pill.className = "tag"; pill.textContent = "探测中…";
+    var ctl = new AbortController(); var t = setTimeout(function () { ctl.abort(); }, 4000);
+    return fetch(AGENT + "/api/cloud-state", { cache: "no-store", signal: ctl.signal })
+      .then(function (r) { clearTimeout(t); return r.json(); })
+      .then(function (s) {
+        agentState = s;
+        var paired = s && s.machinePaired === true;
+        pill.className = "tag"; pill.textContent = paired ? "已在运行 · 已配对" : "已在运行 · 未配对";
+        pill.style.background = paired ? "var(--ok-soft)" : "var(--warn-soft)";
+        pill.style.color = paired ? "var(--ok)" : "var(--warn)";
+        kv($("agentInfo"), [
+          ["状态", "本机助手已启动"],
+          ["配对闸", s.gated ? "开（需网页账号）" : "关"],
+          ["绑定账号", (s.machineAccounts || []).join("、") || "未绑定"],
+          ["设备凭据", s.hasDeviceToken ? "已就绪" : "无"],
+          ["服务器", s.serverReachable ? "可达" : "不可达"],
+        ]);
+      })
+      .catch(function () {
+        agentState = null;
+        pill.className = "tag"; pill.textContent = "未检测到";
+        pill.style.background = "var(--bad-soft)"; pill.style.color = "var(--bad)";
+        kv($("agentInfo"), [
+          ["状态", "没有检测到本机助手"],
+          ["怎么办", "双击桌面上的「Codex Assistant」图标启动它，再点下面的「重新检测」"],
+        ]);
+      });
+  }
+  $("agentRetry").onclick = function () { probeAgent(); };
+  $("agentOpen").onclick = function () {
+    if (!agentState) { probeAgent().then(function () { $("agentOpen").click(); }); return; }
+    fetch(AGENT + "/api/open-auth", { method: "POST" }).catch(function () { /* 忽略 */ });
+  };
+
+  /* ── 配对中心：配对码绑定（走服务端认领，和设备列表同一套数据） ──── */
+  function sanitizeCode(v) { return String(v || "").toLowerCase().replace(/[^0-9a-f]/g, "").slice(0, 8); }
+  $("pairCode").addEventListener("input", function () { var v = sanitizeCode($("pairCode").value); if (v !== $("pairCode").value) $("pairCode").value = v; });
+  $("pairPaste").onclick = function () {
+    var st = $("pairStatus");
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function (text) {
+        var c = sanitizeCode(text);
+        if (!c) { st.textContent = "剪贴板里没有可用的配对码（需 8 位十六进制）"; st.className = "status warn"; return; }
+        $("pairCode").value = c; $("pairCode").focus(); st.textContent = "已粘贴：" + c; st.className = "status";
+      }).catch(function () { st.textContent = "读剪贴板被拒绝 —— 请点进输入框按 Ctrl+V"; st.className = "status warn"; });
+    } else { st.textContent = "浏览器不支持一键粘贴 —— 请按 Ctrl+V"; st.className = "status warn"; }
+  };
+  $("pairClaim").onclick = function () {
+    var st = $("pairStatus"); var code = sanitizeCode($("pairCode").value);
+    if (code.length !== 8) { st.textContent = "配对码是 8 位十六进制"; st.className = "status warn"; return; }
+    var btn = $("pairClaim"); btn.disabled = true; st.textContent = "正在认领…"; st.className = "status";
+    var mid = agentState && agentState.machineId ? agentState.machineId : "";
+    var midPromise = mid ? Promise.resolve(mid)
+      : fetch(AGENT + "/api/health", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) { return (j && j.machineId) || ""; }).catch(function () { return ""; });
+    midPromise.then(function (m) {
+      return api("/device/claim", { method: "POST", body: { code: code, name: "我的电脑", machineId: m } });
+    }).then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) {
+        var why = (r.j && r.j.error) || "";
+        /* ⛔ 3 台上限：服务端返回 device-limit + 明确文案，原样显示（别吞掉） */
+        st.textContent = why === "unauthorized" ? "登录已过期，请重新登录"
+          : why === "device-limit" ? ((r.j && r.j.message) || "每个账号最多绑定 3 台电脑")
+          : "认领失败（" + (why || "未知") + "）";
+        st.className = "status bad"; btn.disabled = false; return;
+      }
+      st.textContent = "已认领 ✓ 本机助手正在完成连接…"; st.className = "status ok";
+      loadDevices(); probeAgent();
+      setTimeout(function () { btn.disabled = false; }, 1500);
+    }).catch(function () { st.textContent = "网络错误"; st.className = "status bad"; btn.disabled = false; });
+  };
+
+  /* ── 配对中心：设备列表 + 解除配对 ────────────────────────────── */
+  function loadDevices() {
+    api("/devices").then(function (r) {
+      var box = $("devices"); box.innerHTML = "";
+      var list = (r.ok && r.j && r.j.ok && r.j.devices) || [];
+      $("stDevices").textContent = String(list.length);
+      var dq = $("devQuota");
+      if (dq) { dq.textContent = list.length + " / 3"; dq.style.background = list.length >= 3 ? "var(--warn-soft)" : "var(--brand-soft)"; dq.style.color = list.length >= 3 ? "var(--warn)" : "var(--brand-ink)"; }
+      if (!list.length) { box.appendChild(el("div", "empty", "还没有设备配对过。用上面的配对码把这台电脑绑上来。")); return; }
+      list.forEach(function (d) {
+        var row = el("div", "row");
+        row.appendChild(el("span", "name grow", d.name || "未命名设备"));
+        row.appendChild(el("span", "meta", "认领 " + fmt(d.claimedAt) + " · 最后在线 " + ago(d.lastSeen)));
+        var un = el("button", "btn sm danger", "解除配对");
+        un.onclick = function () {
+          if (!window.confirm("解除这台设备的配对？该设备需要重新配对才能再连云端。")) return;
+          un.disabled = true;
+          api("/device/revoke", { method: "POST", body: { id: d.id } }).then(function (x) {
+            if (x.ok && x.j && x.j.ok) { loadDevices(); probeAgent(); } else { un.disabled = false; }
+          }).catch(function () { un.disabled = false; });
+        };
+        row.appendChild(un);
+        box.appendChild(row);
+      });
+    }).catch(function () { $("devices").innerHTML = ""; $("devices").appendChild(el("div", "empty", "设备列表读取失败，稍后重试。")); });
+  }
+
+  /* ── 云端管理：概览与数据 ─────────────────────────────────────── */
+  function fmtSize(n) {
+    n = Number(n || 0);
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(2) + " MB";
+    return (n / 1073741824).toFixed(2) + " GB";
+  }
+  function machineShort(id) { return id ? String(id).slice(0, 8) : "未知机器"; }
+
+  function refreshSync() {
+    api("/sync/index").then(function (r) {
+      var j = (r.ok && r.j && r.j.ok) ? r.j : { sessions: [], usedBytes: 0, limitBytes: 1073741824 };
+      var used = Number(j.usedBytes || 0), limit = Number(j.limitBytes || 1073741824);
+      var pct = Math.min(100, Math.round(used / limit * 1000) / 10);
+      var bar = $("usageBar").firstChild;
+      bar.className = "bar" + (pct >= 95 ? " bad" : pct >= 80 ? " warn" : "");
+      bar.firstChild.style.width = pct + "%";
+      $("usageText").innerHTML = "已用 <b>" + fmtSize(used) + "</b> / " + fmtSize(limit) + "（" + pct + "%） · 会话 " + (j.sessions || []).length + " 个";
+      $("quotaTag").textContent = pct >= 95 ? "接近上限" : pct >= 80 ? "已用 " + pct + "%" : "正常";
+      $("sessCount").textContent = (j.sessions || []).length + " 个";
+      /* 概览卡也接真实数据（原先恒 0） */
+      var projSet = {};
+      (j.sessions || []).forEach(function (r2) { if (r2.project) projSet[r2.project] = 1; });
+      if ($("stSessions")) $("stSessions").textContent = String((j.sessions || []).length);
+      if ($("stProjects")) $("stProjects").textContent = String(Object.keys(projSet).length);
+      if ($("stLastSync")) {
+        var last = (j.sessions || []).reduce(function (mx, r2) { return Math.max(mx, r2.updatedAt || 0); }, 0);
+        $("stLastSync").textContent = last ? ago(last) : "—";
+      }
+
+      var box = $("sessList");
+      var all = window.__sessAll = j.sessions || [];
+      var projBox = $("projDel"); projBox.innerHTML = "";
+      if (!all.length) {
+        box.innerHTML = "";
+        box.appendChild(el("div", "empty", "还没有上传过会话。本机助手启动后会自动同步（每 5 分钟一次），也可点上面的「立即同步」。"));
+        return;
+      }
+      /* 项目分类下拉（保留当前选择） */
+      var projSel = $("sessProj");
+      if (projSel) {
+        var keep = projSel.value;
+        var counts = {};
+        all.forEach(function (r2) { var k = r2.project || "(无项目)"; counts[k] = (counts[k] || 0) + 1; });
+        projSel.innerHTML = '<option value="">全部分类（项目）</option>';
+        Object.keys(counts).sort().forEach(function (k) {
+          projSel.appendChild(Object.assign(document.createElement("option"), { value: k, textContent: k + "（" + counts[k] + "）" }));
+        });
+        if (keep) projSel.value = keep;
+      }
+
+      function renderSessPage() {
+        var q = ($("sessQ") && $("sessQ").value || "").trim().toLowerCase();
+        var pj = projSel ? projSel.value : "";
+        var list = all.filter(function (r2) {
+          if (pj && ((r2.project || "(无项目)") !== pj)) return false;
+          if (!q) return true;
+          return [r2.id, r2.title, r2.project, r2.machineName, machineShort(r2.machineId)].join(" ").toLowerCase().indexOf(q) >= 0;
+        });
+        var sort = ($("sessSort") && $("sessSort").value) || "time";
+        list = list.slice().sort(function (a, b) {
+          if (sort === "size") return (b.sizeBytes || 0) - (a.sizeBytes || 0);
+          if (sort === "lines") return (b.lines || 0) - (a.lines || 0);
+          return (b.updatedAt || b.uploadedAt || 0) - (a.updatedAt || a.uploadedAt || 0);
+        });
+        var per = Number(($("sessPer") && $("sessPer").value) || 10) || 10;
+        var pages = Math.max(1, Math.ceil(list.length / per));
+        var page = Math.min(window.__sessPage || 1, pages);
+        window.__sessPage = page;
+        box.innerHTML = "";
+        if (!list.length) {
+          box.appendChild(el("div", "empty",
+            q ? ("没有匹配「" + ($("sessQ").value || "") + "」的会话。可搜索：会话 ID / 项目名 / 机器名。")
+              : "该分类下还没有会话。"));
+        }
+        list.slice((page - 1) * per, page * per).forEach(function (row) {
+          var d = el("div", "sess");
+          var cb = document.createElement("input");
+          cb.type = "checkbox"; cb.className = "sess-cb"; cb.value = row.id;
+          cb.checked = window.__sessSel && window.__sessSel[row.id] ? true : false;
+          cb.onchange = function () {
+            window.__sessSel = window.__sessSel || {};
+            if (cb.checked) window.__sessSel[row.id] = 1; else delete window.__sessSel[row.id];
+            updateSelInfo();
+          };
+          d.appendChild(cb);
+          var body = el("div", "sess-body");
+          body.appendChild(el("div", "t", row.title || row.id));
+          var m = el("div", "m");
+          m.appendChild(el("span", null, "项目：" + (row.project || "—")));
+          m.appendChild(el("span", null, "机器：" + (row.machineName || "—") + " "));
+          m.appendChild(el("code", null, machineShort(row.machineId)));
+          m.appendChild(el("span", null, "上传：" + fmt(row.uploadedAt)));
+          m.appendChild(el("span", null, fmtSize(row.sizeBytes) + " · " + (row.lines || 0) + " 行"));
+          body.appendChild(m);
+          d.appendChild(body);
+          var del = el("button", "btn sm danger", "删除");
+          del.onclick = function () {
+            if (!window.confirm("删除云端这条会话？（本机文件不受影响）")) return;
+            del.disabled = true;
+            api("/sync/delete", { method: "POST", body: { ids: [row.id] } }).then(function () { refreshSync(); }).catch(function () { del.disabled = false; });
+          };
+          d.appendChild(del);
+          box.appendChild(d);
+        });
+        var pager = $("sessPager");
+        if (pager) {
+          pager.innerHTML = "";
+          var prev = el("button", "btn sm", "上一页"); prev.disabled = page <= 1;
+          prev.onclick = function () { window.__sessPage = page - 1; renderSessPage(); };
+          var label = el("span", "hint", page + " / " + pages + " 页（共 " + list.length + " 条）");
+          var next = el("button", "btn sm", "下一页"); next.disabled = page >= pages;
+          next.onclick = function () { window.__sessPage = page + 1; renderSessPage(); };
+          pager.appendChild(prev); pager.appendChild(label); pager.appendChild(next);
+        }
+      }
+      if ($("sessQ") && !$("sessQ").__bound) { $("sessQ").__bound = 1; $("sessQ").addEventListener("input", function () { window.__sessPage = 1; renderSessPage(); }); }
+      if (projSel && !projSel.__bound) { projSel.__bound = 1; projSel.addEventListener("change", function () { window.__sessPage = 1; renderSessPage(); }); }
+      window.__sessRender = renderSessPage;
+      window.__sessSel = window.__sessSel || {};
+
+      /* 选中信息 + 批量按钮状态（同步"本页全选"的勾选态） */
+      window.__updateSelInfo = function () {
+        var sel = Object.keys(window.__sessSel || {}).length;
+        var info = $("sessSelInfo"); if (info) info.textContent = "已选 " + sel + " 条";
+        var btn = $("sessDelSel"); if (btn) btn.disabled = sel === 0;
+        var cbs = document.querySelectorAll("#sessList .sess-cb");
+        var allOn = cbs.length > 0, anyOn = false;
+        Array.prototype.forEach.call(cbs, function (c) { if (c.checked) anyOn = true; else allOn = false; });
+        var allCb = $("sessAll");
+        if (allCb) { allCb.checked = allOn; allCb.indeterminate = anyOn && !allOn; }
+        var batch = $("sessBatch"); if (batch) batch.hidden = false;
+      };
+      var updateSelInfo = window.__updateSelInfo;
+
+      if ($("sessQClear") && !$("sessQClear").__bound) {
+        $("sessQClear").__bound = 1;
+        $("sessQClear").onclick = function () { $("sessQ").value = ""; window.__sessPage = 1; renderSessPage(); updateSelInfo(); };
+      }
+      if ($("sessSort") && !$("sessSort").__bound) {
+        $("sessSort").__bound = 1;
+        $("sessSort").onchange = function () { window.__sessPage = 1; renderSessPage(); updateSelInfo(); };
+      }
+      if ($("sessPer") && !$("sessPer").__bound) {
+        $("sessPer").__bound = 1;
+        $("sessPer").onchange = function () { window.__sessPage = 1; renderSessPage(); updateSelInfo(); };
+      }
+      if ($("sessAll") && !$("sessAll").__bound) {
+        $("sessAll").__bound = 1;
+        $("sessAll").onchange = function () {
+          var on = $("sessAll").checked;
+          Array.prototype.forEach.call(document.querySelectorAll("#sessList .sess-cb"), function (c) {
+            c.checked = on;
+            if (on) window.__sessSel[c.value] = 1; else delete window.__sessSel[c.value];
+          });
+          updateSelInfo();
+        };
+      }
+      if ($("sessDelSel") && !$("sessDelSel").__bound) {
+        $("sessDelSel").__bound = 1;
+        $("sessDelSel").onclick = function () {
+          var ids = Object.keys(window.__sessSel || {});
+          if (!ids.length) return;
+          if (!window.confirm("删除选中的 " + ids.length + " 条云端会话？（本机文件不受影响）")) return;
+          $("sessDelSel").disabled = true;
+          api("/sync/delete", { method: "POST", body: { ids: ids } }).then(function () {
+            window.__sessSel = {}; refreshSync();
+          }).catch(function () { $("sessDelSel").disabled = false; });
+        };
+      }
+      renderSessPage();
+      updateSelInfo();
+      /* 按项目批量删除（沿用原有逻辑，用全量数据统计） */
+      var projCounts = {};
+      all.forEach(function (r2) { if (r2.project) projCounts[r2.project] = (projCounts[r2.project] || 0) + 1; });
+      Object.keys(projCounts).forEach(function (name) {
+        var b = el("button", "btn sm danger", name + "（" + projCounts[name] + "）");
+        b.style.marginRight = "8px";
+        b.onclick = function () {
+          if (!window.confirm("删除项目「" + name + "」在云端的全部会话？")) return;
+          b.disabled = true;
+          api("/sync/delete", { method: "POST", body: { project: name } }).then(function () { refreshSync(); }).catch(function () { b.disabled = false; });
+        };
+        projBox.appendChild(b);
+      });
+    }).catch(function () {
+      $("sessList").innerHTML = ""; $("sessList").appendChild(el("div", "empty", "云端数据读取失败，稍后重试。"));
+    });
+  }
+
+  $("syncPull").onclick = function () {
+    var st = $("syncStatus"); st.className = "status"; st.textContent = "正在通知本机助手下载…";
+    fetch(AGENT + "/api/sync-pull", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var res = j && j.result || {};
+        st.textContent = res.ok ? ("已下载 " + (res.pulled || 0) + " 个会话（本机已有 " + (res.skipped || 0) + " 个）—— 到本机应用的会话列表里看") : ("未完成：" + (res.reason || "本机助手未运行"));
+        st.className = "status " + (res.ok ? "ok" : "warn");
+      })
+      .catch(function () { st.textContent = "本机助手未运行 —— 下载由本机执行，需要助手开着"; st.className = "status warn"; });
+  };
+
+  $("syncNow").onclick = function () {
+    var st = $("syncStatus"); st.className = "status"; st.textContent = "正在通知本机助手同步…";
+    fetch(AGENT + "/api/sync-now", { method: "POST" }).then(function (r) { return r.json(); }).then(function (j) {
+      var res = j && j.result || {};
+      st.textContent = res.ok ? ("完成：上传 " + (res.pushedSessions || 0) + " 个会话 / " + (res.pushedLines || 0) + " 行" + (res.quotaExceeded ? "（已达存储上限，剩余未传）" : "")) : ("未完成：" + (res.reason || "本机助手未运行或未配对"));
+      st.className = "status " + (res.ok ? "ok" : "warn");
+      refreshSync();
+    }).catch(function () { st.textContent = "本机助手未运行 —— 请先启动它"; st.className = "status warn"; });
+  };
+
+  /* ── 我的积分（用户中心）─────────────────────────────────────────────── */
+  function loadPoints() {
+    api("/points/me").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) {
+        $("ptTag").textContent = "读取失败"; $("ptList").innerHTML = "";
+        return;
+      }
+      var j = r.j;
+      $("ptBalance").textContent = Number(j.balance).toFixed(2).replace(/\.00$/, "");
+      $("ptTag").textContent = j.verify && j.verify.ok ? "账目一致" : "账目待核对";
+      $("ptTag").style.background = (j.verify && j.verify.ok) ? "var(--ok-soft)" : "var(--warn-soft)";
+      $("ptTag").style.color = (j.verify && j.verify.ok) ? "var(--ok)" : "var(--warn)";
+      var last = (j.txns && j.txns[0]) ? j.txns[0] : null;
+      $("ptMeta").innerHTML = "注册赠送 " + (j.signupGrant || 0) + " 积分" +
+        (last ? " · 最近变动 " + ago(last.at) : "") +
+        " · 明细 " + (j.txns ? j.txns.length : 0) + " 条";
+      if ($("sidePoints")) $("sidePoints").textContent = "积分 " + Number(j.balance).toFixed(2).replace(/\.00$/, "");
+      var box = $("ptList"); box.innerHTML = "";
+      /* 10-15：全量缓存到闭包，前端分页（每页 10 条）+ 清除记录 */
+      window.__ptAll = (j.txns || []);
+      window.__ptPage = 1;
+      window.__ptFilter = window.__ptFilter || "all";
+      if (!window.__ptAll.length) {
+        box.appendChild(el("div", "empty", "还没有积分变动"));
+        var clr0 = el("button", "btn", "清除记录"); clr0.disabled = true; box.appendChild(clr0);
+        return;
+      }
+      var bar = el("div", "pt-ops");
+      var clr = el("button", "btn", "清除记录");
+      clr.style.marginRight = "auto";
+      clr.onclick = function () {
+        if (!window.confirm("⚠ 确定清除全部积分变动记录吗？\n（只清记录，积分余额保持不变，不可恢复）")) return;
+        clr.disabled = true;
+        api("/points/clear", { method: "POST" }).then(function (r) {
+          clr.disabled = false;
+          if (r.ok && r.j && r.j.ok) { say("记录已清除", "ok"); loadPoints(); }
+          else { say("清除失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+        }).catch(function () { clr.disabled = false; say("网络错误", "bad"); });
+      };
+      bar.appendChild(clr);
+      var filterSel = el("select", "field");
+      filterSel.style.cssText = "padding:4px 8px;border-radius:6px;border:1px solid var(--line);background:var(--field);font:inherit;font-size:12.5px";
+      [["all", "全部变动"], ["neg", "仅扣减（消耗）"], ["pos", "仅增加（发放）"]].forEach(function (o) {
+        var op = document.createElement("option"); op.value = o[0]; op.textContent = o[1]; filterSel.appendChild(op);
+      });
+      filterSel.value = window.__ptFilter || "all";
+      filterSel.onchange = function () { window.__ptFilter = filterSel.value; window.__ptPage = 1; drawPage(); };
+      bar.appendChild(filterSel);
+      var pager = el("span", "hint"); pager.style.display = "inline-flex"; pager.style.gap = "8px"; pager.style.alignItems = "center";
+      var prev = el("button", "btn", "上一页"); prev.style.padding = "4px 10px";
+      var pageLabel = el("span", "", "");
+      var next = el("button", "btn", "下一页"); next.style.padding = "4px 10px";
+      pager.appendChild(prev); pager.appendChild(pageLabel); pager.appendChild(next);
+      bar.appendChild(pager);
+      box.appendChild(bar);
+      var rowsBox = el("div", "pt-rows");
+      box.appendChild(rowsBox);
+      function drawPage() {
+        var f = window.__ptFilter || "all";
+        var list = window.__ptAll.filter(function (t) {
+          var d = Number(t.delta);
+          if (f === "neg") return d < 0;
+          if (f === "pos") return d > 0;
+          return true;
+        });
+        var total = list.length;
+        var pages = Math.max(1, Math.ceil(total / 10));
+        if (window.__ptPage > pages) window.__ptPage = pages;
+        if (window.__ptPage < 1) window.__ptPage = 1;
+        rowsBox.innerHTML = "";
+        if (!total) { rowsBox.appendChild(el("div", "empty", "该筛选下没有记录")); }
+        list.slice((window.__ptPage - 1) * 10, window.__ptPage * 10).forEach(function (t) {
+          var row = el("div", "row");
+          var up = Number(t.delta) > 0;
+          var amt = el("span", "name", (up ? "+" : "") + Number(t.delta).toFixed(2).replace(/\.00$/, ""));
+          amt.style.color = up ? "var(--ok)" : "var(--bad)";
+          amt.style.minWidth = "74px";
+          row.appendChild(amt);
+          row.appendChild(el("span", "grow", t.note || t.kind));
+          var kindText = t.kind === "signup" ? "注册赠送" : t.kind === "grant" ? "管理员发放" : t.kind === "consume" ? "消费" : t.kind;
+          row.appendChild(el("span", "pill plain", kindText));
+          row.appendChild(el("span", "meta", fmt(t.at) + " · 余 " + Number(t.after).toFixed(2).replace(/\.00$/, "")));
+          rowsBox.appendChild(row);
+        });
+        pageLabel.textContent = window.__ptPage + " / " + pages + " 页（共 " + total + " 条）";
+        prev.disabled = window.__ptPage <= 1;
+        next.disabled = window.__ptPage >= pages;
+      }
+      prev.onclick = function () { window.__ptPage--; drawPage(); };
+      next.onclick = function () { window.__ptPage++; drawPage(); };
+      drawPage();
+    }).catch(function () { $("ptTag").textContent = "读取失败"; });
+  }
+
+  /* ── 限时福利：模型目录 + 勾选管理 ─────────────────────────────────────
+     · 目录来自 WBM（经服务端只读凭据同步）；每模型的 credits = 积分消耗倍率
+     · 勾选是**整集覆盖**保存（前端去抖 500ms）；服务端按此强制放行，
+       所以界面不是"建议"，而是唯一开关。 */
+  var lbData = null;
+  var lbTimer = 0;
+  function lbRender() {
+    var box = $("lbList"); box.innerHTML = "";
+    var kw = String(($("lbSearch") || {}).value || "").trim().toLowerCase();
+    var list = (lbData && lbData.models) || [];
+    var shown = list.filter(function (m) {
+      return !kw || (m.id + " " + (m.name || "") + " " + (m.tags || []).join(" ")).toLowerCase().indexOf(kw) >= 0;
+    });
+    if (!shown.length) { box.appendChild(el("div", "empty", list.length ? "没有匹配的模型" : "目录为空（WBM 侧可能未配置）")); return; }
+    shown.forEach(function (m) {
+      var row = el("label", "check");
+      var cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = !!m.enabled; cb.dataset.id = m.id;
+      /* ⛔ 20:0x：勾选维护在**独立 Set**里，不再依赖 lbData——
+         lbData 会被 refreshCloud / 切 tab 触发的 lbLoad 整体替换，500ms 去抖窗口内
+         若发生重载，用户刚勾的会从新对象上丢失（"勾了 4 个只存住 1 个"的成因）。 */
+      window.__lbPicked = window.__lbPicked || new Set();
+      if (m.enabled) window.__lbPicked.add(m.id); else window.__lbPicked.delete(m.id);
+      cb.onchange = function () {
+        m.enabled = cb.checked;
+        if (cb.checked) window.__lbPicked.add(m.id); else window.__lbPicked.delete(m.id);
+        updateLbMeta();
+        $("lbStatus").textContent = "保存中…"; $("lbStatus").className = "status";
+        clearTimeout(lbTimer);
+        lbTimer = setTimeout(lbSave, 500);
+      };
+      row.appendChild(cb);
+      var name = el("span", null, m.name || m.id);
+      row.appendChild(name);
+      var meta = el("span", "hint");
+      meta.style.marginLeft = "auto";
+      meta.textContent = (m.credits ? "消耗 " + m.credits : "免费") +
+        (m.contextLength ? " · " + Math.round(m.contextLength / 1000) + "K" : "");
+      row.appendChild(meta);
+      box.appendChild(row);
+    });
+  }
+  /* 顶部"已启用 N / 共 M"随勾选即时更新（不必等保存返回） */
+  function updateLbMeta() {
+    var meta = $("lbMeta"); if (!meta) return;
+    var picked = (window.__lbPicked || new Set()).size;
+    var total = (lbData && lbData.models || []).length;
+    meta.innerHTML = "内置供应商：登录即可用，无需自己配置密钥。已启用 <b>" + picked + "</b> / " + total + " 个模型" +
+      (lbData && lbData.syncedAt ? " · 目录同步于 " + ago(lbData.syncedAt) : "") +
+      " · 来源 " + ((lbData && lbData.source) || "—");
+  }
+
+  function lbSave() {
+    var ids = Array.from(window.__lbPicked || []);
+    api("/models/enabled", { method: "POST", body: { ids: ids } }).then(function (r) {
+      if (r.ok && r.j && r.j.ok) { $("lbStatus").textContent = "已保存 ✓ 启用 " + r.j.enabledCount + " 个"; $("lbStatus").className = "status ok"; }
+      else { $("lbStatus").textContent = "保存失败，已回滚"; $("lbStatus").className = "status bad"; lbLoad(); }
+    }).catch(function () { $("lbStatus").textContent = "网络错误"; $("lbStatus").className = "status bad"; });
+  }
+  if ($("lbReload")) $("lbReload").onclick = function () {
+    var b = $("lbReload");
+    if (b.disabled) return;
+    b.disabled = true;
+    var orig = b.textContent;
+    b.textContent = "刷新中…";
+    $("lbStatus").textContent = "正在刷新模型目录…";
+    $("lbStatus").className = "status";
+    lbLoad(false, function (ok, count, err) {
+      b.disabled = false; b.textContent = orig;
+      if (ok) {
+        $("lbStatus").textContent = "✓ 已刷新，共 " + count + " 个模型（已启用 " + ((window.__lbPicked || new Set()).size) + " 个）";
+        $("lbStatus").className = "status ok";
+      } else {
+        $("lbStatus").textContent = "刷新失败：" + (err || "未知错误");
+        $("lbStatus").className = "status bad";
+      }
+    });
+  };
+
+  function lbLoad(force, done) {
+    if (!done) { $("lbStatus").textContent = ""; $("lbStatus").className = "status"; }
+    api(force ? "/admin/models/sync" : "/models").then(function (r) {
+      /* ⛔ 同步（force）失败时**降级读现有目录**——以前这里直接清空列表显示"读取失败"，
+         用户看起来像"模型全没了"（19:5x 用户实测：普通用户点同步 ⇒ 403 ⇒ 列表被清空）。 */
+      if (force && (!r.ok || !r.j || r.j.ok === false)) {
+        $("lbStatus").textContent = "同步未执行（" + ((r.j && r.j.error) || r.status) + "），已显示现有目录";
+        $("lbStatus").className = "status bad";
+        return lbLoad(false);
+      }
+      if (!r.ok || !r.j) { $("lbList").innerHTML = ""; $("lbList").appendChild(el("div", "empty", "读取失败（请稍后重试）")); if (typeof done === "function") done(false, 0, (r.j && r.j.error) || ("HTTP " + r.status)); return; }
+      if (r.j.ok === false) { $("lbList").innerHTML = ""; $("lbList").appendChild(el("div", "empty", "目录同步失败：" + (r.j.error || "未知"))); if (typeof done === "function") done(false, 0, r.j.error || "同步失败"); return; }
+      lbData = r.j;
+      /* 以服务端为准重建选择集（仅加载时；保存过程中不重建） */
+      window.__lbPicked = new Set((r.j.models || []).filter(function (m) { return m.enabled; }).map(function (m) { return m.id; }));
+      var st = $("lbState");
+      st.textContent = (r.j.provider && r.j.provider.ready) ? "可用" : "待配置";
+      st.style.background = (r.j.provider && r.j.provider.ready) ? "var(--ok-soft)" : "var(--warn-soft)";
+      st.style.color = (r.j.provider && r.j.provider.ready) ? "var(--ok)" : "var(--warn)";
+      $("lbMeta").innerHTML = "内置供应商：登录即可用，无需自己配置密钥。" +
+        "已启用 <b>" + (r.j.enabledCount || 0) + "</b> / " + (r.j.total || 0) + " 个模型" +
+        (r.j.syncedAt ? " · 目录同步于 " + ago(r.j.syncedAt) : "") +
+        " · 来源 " + (r.j.source || "—");
+      lbRender();
+      if (typeof done === "function") done(true, (r.j.models || []).length, null);
+    }).catch(function () { $("lbList").innerHTML = ""; $("lbList").appendChild(el("div", "empty", "读取失败")); });
+  }
+  $("lbSearch").oninput = lbRender;
+  $("lbAll").onclick = function () { ((lbData || {}).models || []).forEach(function (m) { m.enabled = true; }); lbRender(); lbSave(); };
+  $("lbNone").onclick = function () { ((lbData || {}).models || []).forEach(function (m) { m.enabled = false; }); lbRender(); lbSave(); };
+  function refreshCloud() { refreshSync(); lbLoad(false); }
+
+  function legacyRefreshCloud() {
+    $("cloudData").innerHTML = ""; $("cloudData").appendChild(el("div", "empty", "读取中…"));
+    api("/devices").then(function (r) {
+      var list = (r.ok && r.j && r.j.ok && r.j.devices) || [];
+      $("stDevices").textContent = String(list.length);
+      $("stSessions").textContent = "0";
+      $("stProjects").textContent = "0";
+      $("stLastSync").textContent = "未开启";
+      var box = $("cloudData"); box.innerHTML = "";
+      if (!list.length) { box.appendChild(el("div", "empty", "本账号名下还没有设备。")); return; }
+      list.forEach(function (d) {
+        var row = el("div", "row");
+        row.appendChild(el("span", "name grow", d.name || "未命名设备"));
+        row.appendChild(el("span", "meta", "最后在线 " + ago(d.lastSeen)));
+        row.appendChild(el("span", "pill plain", "会话 0 · 用量 0 B"));
+        box.appendChild(row);
+      });
+    }).catch(function () { });
+  }
+
+  function refreshPairing() { probeAgent(); loadDevices(); }
+})();</script>
+</body>
+</html>

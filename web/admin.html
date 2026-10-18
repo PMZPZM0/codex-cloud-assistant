@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark light" />
+<title>用户管理 · Codex Assistant</title>
+<!-- ⛔ 自足页：只依赖本文件与 /cloud-api/*，云端原样托管即可用（外壳双模式的同一铁律）。 -->
+<style>
+  /* ── 设计令牌（与登录门同一套；自包含，云端原样托管即可用）────────────────── */
+  :root {
+    color-scheme: dark;
+    --g-bg: #141413;
+    --g-card: #1e1e1d;
+    --g-field: #ffffff0a;
+    --g-line: #ffffff17;
+    --g-line-soft: #ffffff0f;
+    --g-text: #ececea;
+    --g-muted: #a6a6a1;
+    --g-faint: #7c7c76;
+    --g-brand-1: #a78bfa;
+    --g-brand-2: #7c3aed;
+    --g-brand-ink: #c4b5fd;
+    --g-ok: #58c085;
+    --g-warn: #f0a35c;
+    --g-bad: #ec7a70;
+    --g-dur: 180ms;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --g-bg: #f4f4f3;
+    --g-card: #ffffff;
+    --g-field: #00000006;
+    --g-line: #00000017;
+    --g-line-soft: #0000000d;
+    --g-text: #23231f;
+    --g-muted: #6f6f69;
+    --g-faint: #8b8b85;
+    --g-brand-1: #8b5cf6;
+    --g-brand-2: #6d28d9;
+    --g-brand-ink: #6d28d9;
+  }
+  html, body {
+    margin: 0; min-height: 100%;
+    background: var(--g-bg); color: var(--g-text);
+    font: 13px/1.6 Inter, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizelegibility;
+  }
+  button, input { appearance: none; -webkit-appearance: none; font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--g-brand-1); outline-offset: 2px; border-radius: 8px; }
+  [hidden] { display: none !important; }
+
+  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 16px 48px; }
+
+  /* ── 头部：品牌 + 身份 + 退出 ─────────────────────────────────────────────── */
+  .head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .brand-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+  .brand-mark {
+    width: 26px; height: 26px; border-radius: 8px; flex: none;
+    background: linear-gradient(135deg, var(--g-brand-1), var(--g-brand-2) 55%, #3b1d8f);
+    box-shadow: 0 2px 10px color-mix(in srgb, var(--g-brand-2) 45%, transparent);
+  }
+  .brand-name {
+    font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    background: linear-gradient(100deg, var(--g-brand-1), var(--g-brand-ink), var(--g-brand-1));
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+  }
+  .brand-name em { font-style: normal; -webkit-text-fill-color: var(--g-faint); color: var(--g-faint); font-weight: 400; margin-left: 6px; font-size: 11.5px; }
+  .head .who { font-size: 12px; color: var(--g-muted); flex: none; }
+
+  .card {
+    border: 1px solid var(--g-line); background: var(--g-card);
+    border-radius: 14px; padding: 20px 22px;
+    box-shadow: 0 1px 2px #00000026, 0 12px 36px #00000042;
+    animation: card-in 200ms cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .card { animation: none; } }
+
+  /* ── 表格：行高 ≥40 · hover 单色 · 数字等宽 · 窄屏横滚 ────────────────────── */
+  .table-wrap { overflow-x: auto; margin: 0 -6px; padding: 0 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left; color: var(--g-faint); font-weight: 500;
+    padding: 8px 10px; border-bottom: 1px solid var(--g-line); font-size: 11.5px;
+    white-space: nowrap;
+  }
+  td { padding: 12px 10px; border-bottom: 1px solid var(--g-line-soft); vertical-align: top; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--g-text) 4%, transparent); }
+  td .name { font-weight: 600; }
+  td .time { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--g-muted); white-space: nowrap; }
+  td .ops { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  button.act {
+    display: inline-flex; align-items: center;
+    min-height: 30px; padding: 4px 11px;
+    border-radius: 8px; border: 1px solid var(--g-line);
+    background: var(--g-field); color: var(--g-text);
+    cursor: pointer; font-size: 11.5px;
+    transition: background var(--g-dur) ease, border-color var(--g-dur) ease;
+  }
+  button.act:hover { background: color-mix(in srgb, var(--g-text) 8%, transparent); }
+  button.act.danger { color: var(--g-bad); border-color: color-mix(in srgb, var(--g-bad) 40%, var(--g-line)); }
+  button.act.danger:hover { background: color-mix(in srgb, var(--g-bad) 10%, transparent); }
+  button.act.primary {
+    border-color: transparent;
+    background: linear-gradient(135deg, var(--g-brand-1), var(--g-brand-2)); color: #fff;
+    font-weight: 600; min-height: 38px; padding: 6px 18px; font-size: 13px;
+  }
+  button.act.primary:hover:not(:disabled) { filter: brightness(1.08); }
+  button.act:disabled { opacity: .55; cursor: default; }
+
+  .tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 9px; border-radius: 999px; font-size: 11px;
+    border: 1px solid var(--g-line); color: var(--g-muted);
+  }
+  .tag.admin { color: var(--g-warn); border-color: color-mix(in srgb, var(--g-warn) 40%, transparent); }
+  .tag.off { color: var(--g-bad); border-color: color-mix(in srgb, var(--g-bad) 40%, transparent); }
+  .tag.on { color: var(--g-ok); border-color: color-mix(in srgb, var(--g-ok) 40%, transparent); }
+
+  .status { min-height: 18px; font-size: 12.5px; margin: 12px 0 0; }
+  .status.bad { color: var(--g-bad); }
+  .status.ok { color: var(--g-ok); }
+  .hint { font-size: 11.5px; color: var(--g-faint); margin-top: 16px; line-height: 1.8; }
+
+  /* ── 管理员登录卡 ─────────────────────────────────────────────────────────── */
+  .field-label { display: block; font-size: 12px; color: var(--g-muted); margin: 0 0 6px; font-weight: 500; }
+  .field-gap { margin-top: 14px; }
+  .field, dialog input {
+    width: 100%; min-height: 40px; padding: 9px 12px;
+    border-radius: 10px; border: 1px solid var(--g-line);
+    background: var(--g-field); color: var(--g-text);
+    font-size: 14px; transition: border-color var(--g-dur) ease, box-shadow var(--g-dur) ease;
+  }
+  .field:focus, dialog input:focus {
+    outline: 0; border-color: var(--g-brand-2);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--g-brand-2) 25%, transparent);
+  }
+  #gate .go, dialog .row .act.primary { width: auto; }
+
+  dialog {
+    border: 1px solid var(--g-line); border-radius: 14px;
+    background: var(--g-card); color: inherit; padding: 22px; min-width: 320px;
+    box-shadow: 0 18px 48px #00000059;
+  }
+  dialog::backdrop { background: color-mix(in srgb, var(--g-text) 24%, transparent); }
+  dialog input { margin: 6px 0 14px; font-family: inherit; }
+  dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+  a { color: var(--g-brand-ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div class="brand-row">
+      <div class="brand-mark"></div>
+      <div class="brand-name">Codex Assistant<em>管理中心</em></div>
+      <a class="link-soft" href="account.html" style="margin-left:auto;font-size:13px">返回用户中心</a>
+    </div>
+    <span class="who" id="who"></span>
+    <button class="act" id="logout">退出</button>
+  </div>
+
+  <div class="card" id="gate">
+    <div id="gate-body">
+      <div class="brand-row" style="margin-bottom:14px">
+        <div class="brand-mark"></div>
+        <div class="brand-name">管理员登录<em>仅站点管理员</em></div>
+      </div>
+      <p style="margin:0 0 14px;font-size:12.5px;color:var(--g-muted);line-height:1.7">管理员登录后才能管理用户。</p>
+      <label class="field-label" for="u">用户名</label>
+      <input class="field" id="u" autocomplete="username" />
+      <label class="field-label field-gap" for="p">密码</label>
+      <input class="field" id="p" type="password" autocomplete="current-password" />
+      <button class="act primary" id="go" style="margin-top:16px;width:100%">登录</button>
+      <p class="status" id="gate-status"></p>
+    </div>
+  </div>
+
+  <div class="card" id="upstreamPanel" hidden>
+    <h2>上游 API <span class="tag" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--g-brand-ink);color:#1e1e1d">热生效</span></h2>
+    <p class="hint" id="upInfo">读取中…</p>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+      <label style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:4px">
+        <span class="hint">上游 API 地址（https:// 开头）</span>
+        <input class="field" id="upBase" spellcheck="false" />
+      </label>
+      <label style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:4px">
+        <span class="hint">网关密钥（已保存则留空不改）</span>
+        <input class="field" id="upKey" type="password" spellcheck="false" />
+      </label>
+      <button class="btn act primary" id="upSave" style="height:36px">保存（热生效）</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <span class="hint" id="diskInfo" style="flex:1">服务器磁盘余量读取中…</span>
+      <button class="btn" id="diskRefresh" style="font-size:12px">刷新</button>
+    </div>
+    <div style="height:8px;border-radius:6px;background:var(--g-line);overflow:hidden;margin:8px 0 4px">
+      <div id="diskBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--g-ok),var(--g-warn) 75%,var(--g-bad));transition:width .4s"></div>
+    </div>
+    <p class="status" id="upStatus"></p>
+  </div>
+
+  <div class="card" id="pointsPanel" hidden>
+    <h2>积分管理</h2>
+    <div class="row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <input class="field" id="ptq" placeholder="按用户名搜索…" style="flex:1;min-width:180px;padding:8px 12px;border-radius:8px;border:1px solid var(--g-line);background:var(--g-field);font:inherit" />
+      <button class="btn" id="ptSearch">搜索</button>
+      <button class="btn" id="ptAll">全部</button>
+      <span class="hint" id="ptSummary"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>用户名</th><th>积分余额</th><th>流水</th><th>最近变动</th><th>发放（正数增加 / 负数扣减）</th></tr></thead>
+        <tbody id="ptRows"></tbody>
+      </table>
+    </div>
+    <p class="status" id="ptStatus"></p>
+    <p class="hint">
+      · 新用户注册即赠 <b id="ptGrant"></b> 积分（同账号只赠一次）。<br>
+      · 积分消耗来自用户在「限时福利」里调用模型的上游回执，与该模型倍率一致（云端管理可看倍率）。<br>
+      · 发放会写入对方积分流水（带你的管理员名与备注），不可静默修改历史。
+    </p>
+  </div>
+
+  <div class="card" id="panel" hidden>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>最近登录</th><th>云存储配额（GB，保存即生效）</th><th>操作</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    </div>
+    <p class="status" id="status"></p>
+    <p class="hint">
+      · 停用 = 立即踢下线并禁止登录（会话与配对 token 都失效）；删除 = 连同账号一起移除，不可恢复。<br>
+      · 这里的账号只管**网站访问身份**；用户电脑上的助手与配对码不受影响。
+    </p>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <form method="dialog" onsubmit="return false">
+    <div id="dlg-title" style="font-weight:600;margin-bottom:10px"></div>
+    <div id="dlg-body"></div>
+    <div class="row">
+      <button class="act" id="dlg-cancel">取消</button>
+      <button class="act" id="dlg-ok" style="border-color:#4c8df6;color:#7cabf8">确定</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(function () {
+  "use strict";
+  var API = "/cloud-api";
+  var session = null;
+  try { session = localStorage.getItem("chc-session"); } catch (e) { /* 忽略 */ }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var statusEl = $("status");
+  function say(text, cls) { statusEl.textContent = text; statusEl.className = "status" + (cls ? " " + cls : ""); }
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = { "Content-Type": "application/json" };
+    if (session) headers.Authorization = "Bearer " + session;
+    return fetch(API + path, { method: opts.method || "GET", headers: headers, body: opts.body ? JSON.stringify(opts.body) : undefined })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); });
+  }
+  function fmtTime(ms) { if (!ms) return "—"; var d = new Date(ms); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0") + " " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0"); }
+
+  /* 简易确认弹窗（返回 Promise<boolean>） */
+  function confirmBox(title, message, inputPlaceholder) {
+    return new Promise(function (resolve) {
+      var dlg = $("dlg");
+      $("dlg-title").textContent = title;
+      var body = $("dlg-body"); body.innerHTML = "";
+      var msg = document.createElement("p"); msg.style.margin = "0 0 10px"; msg.textContent = message; body.appendChild(msg);
+      var input = null;
+      if (inputPlaceholder !== undefined) {
+        input = document.createElement("input"); input.placeholder = inputPlaceholder; body.appendChild(input);
+      }
+      var done = false;
+      $("dlg-cancel").onclick = function () { done = true; dlg.close(); resolve(null); };
+      $("dlg-ok").onclick = function () {
+        if (done) return; done = true;
+        dlg.close(); resolve(input ? input.value : true);
+      };
+      dlg.addEventListener("close", function () { if (!done) { done = true; resolve(null); } }, { once: true });
+      dlg.showModal();
+      if (input) input.focus();
+    });
+  }
+
+  /* ── 上游 API 与磁盘余量（10-15）────────────────────────────────────── */
+  function gb(n) { return (n / 1073741824).toFixed(1); }
+  function loadUpstream() {
+    api("/admin/upstream").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { $("upstreamPanel").hidden = true; return; }
+      $("upstreamPanel").hidden = false;
+      $("upBase").value = r.j.base || "";
+      $("upKey").value = "";
+      $("upKey").placeholder = r.j.hasKey ? "已保存，留空则不修改" : "上游网关的 API Key";
+      $("upInfo").textContent = "当前来源：" + (r.j.source === "admin" ? "管理员配置" : "服务端环境变量") + (r.j.hasKey ? " · 网关密钥已配置" : " · 网关密钥未配置");
+    });
+  }
+  function loadDisk() {
+    $("diskInfo").textContent = "服务器磁盘余量读取中…";
+    api("/admin/disk").then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { $("diskInfo").textContent = "磁盘余量读取失败：" + ((r.j && r.j.error) || r.status); return; }
+      var pct = Math.min(100, Math.round(r.j.usedBytes / r.j.totalBytes * 100));
+      $("diskBar").style.width = pct + "%";
+      $("diskInfo").textContent = "服务器磁盘：总 " + gb(r.j.totalBytes) + " GB · 已用 " + pct + "% · 剩余 " + gb(r.j.freeBytes) + " GB";
+    });
+  }
+  if ($("upSave")) $("upSave").onclick = function () {
+    var base = $("upBase").value.trim();
+    if (!/^https:\/\//.test(base)) { say("上游地址必须是 https:// 开头的完整 URL", "bad"); return; }
+    $("upSave").disabled = true;
+    api("/admin/upstream", { method: "POST", body: { base: base, gatewayKey: $("upKey").value.trim() } }).then(function (r) {
+      $("upSave").disabled = false;
+      if (r.ok && r.j && r.j.ok) { say("上游 API 已更新并热生效（下一条调用即走新地址）", "ok"); loadUpstream(); }
+      else { say("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+    }).catch(function () { $("upSave").disabled = false; say("网络错误", "bad"); });
+  };
+  if ($("diskRefresh")) $("diskRefresh").onclick = loadDisk;
+
+  /* ── 积分管理 ─────────────────────────────────────────────────────── */
+  function loadPoints(q) {
+    var box = $("ptRows"); if (!box) return;
+    box.innerHTML = "";
+    api("/admin/points" + (q ? "?q=" + encodeURIComponent(q) : "")).then(function (r) {
+      if (!r.ok || !r.j || !r.j.ok) { say("积分读取失败：" + ((r.j && r.j.error) || r.status)); return; }
+      $("pointsPanel").hidden = false;
+      $("ptGrant").textContent = r.j.signupGrant;
+      $("ptSummary").textContent = "共 " + r.j.total + " 个账号";
+      if (!r.j.users.length) { box.appendChild(Object.assign(document.createElement("tr"), { innerHTML: '<td colspan="5" class="hint">没有匹配的账号</td>' })); return; }
+      r.j.users.forEach(function (u) {
+        var tr = document.createElement("tr");
+        function td(cls, text) { var d = document.createElement("td"); if (cls) d.className = cls; d.textContent = text; return d; }
+        var tdName = document.createElement("td");
+        tdName.appendChild(Object.assign(document.createElement("span"), { className: "name", textContent: u.username }));
+        if (u.disabled) tdName.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: " （已停用）" }));
+        if (u.role === "admin") tdName.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: " （管理员）" }));
+        tr.appendChild(tdName);
+        tr.appendChild(td("", Number(u.balance).toFixed(2).replace(/\.00$/, "")));
+        tr.appendChild(td("", u.txnCount + " 条"));
+        tr.appendChild(td("time", u.lastAt ? fmtTime(u.lastAt) + " · " + u.lastNote : "—"));
+        var tdOps = document.createElement("td");
+        var wrap = document.createElement("div"); wrap.className = "ops";
+        var amt = document.createElement("input");
+        amt.type = "number"; amt.placeholder = "如 500 / -100"; amt.value = "500";
+        amt.style.cssText = "width:110px;padding:5px 8px;border-radius:6px;border:1px solid var(--g-line);background:var(--g-field);font:inherit;font-size:12.5px";
+        var note = document.createElement("input");
+        note.placeholder = "备注（可选）";
+        note.style.cssText = "width:140px;padding:5px 8px;border-radius:6px;border:1px solid var(--g-line);background:var(--g-field);font:inherit;font-size:12.5px";
+        var go = document.createElement("button");
+        go.className = "btn"; go.textContent = "发放";
+        go.onclick = function () {
+          var delta = Number(amt.value);
+          if (!Number.isFinite(delta) || delta === 0) { say("请输入非 0 的分值", "bad"); return; }
+          go.disabled = true;
+          api("/admin/points/grant", { method: "POST", body: { username: u.username, delta: delta, note: note.value } }).then(function (x) {
+            go.disabled = false;
+            if (x.ok && x.j && x.j.ok) { say("已给 " + u.username + " 发放 " + delta + "，余额 " + x.j.balance, "ok"); loadPoints($("ptq").value.trim()); }
+            else { say("发放失败：" + ((x.j && x.j.error) || x.status), "bad"); }
+          }).catch(function () { go.disabled = false; say("网络错误", "bad"); });
+        };
+        wrap.appendChild(amt); wrap.appendChild(note); wrap.appendChild(go);
+        tdOps.appendChild(wrap); tr.appendChild(tdOps);
+        box.appendChild(tr);
+      });
+    });
+  }
+  if ($("ptSearch")) $("ptSearch").onclick = function () { loadPoints($("ptq").value.trim()); };
+  if ($("ptq")) $("ptq").addEventListener("keydown", function (e) { if (e.key === "Enter") loadPoints($("ptq").value.trim()); });
+  if ($("ptAll")) $("ptAll").onclick = function () { $("ptq").value = ""; loadPoints(""); };
+
+  function render(users, me) {
+    var rows = $("rows"); rows.innerHTML = "";
+    for (var i = users.length - 1; i >= 0; i--) {
+      (function (u) {
+        var tr = document.createElement("tr");
+        var td1 = document.createElement("td");
+        td1.appendChild(Object.assign(document.createElement("span"), { className: "name", textContent: u.username }));
+        tr.appendChild(td1);
+        var td2 = document.createElement("td");
+        td2.appendChild(Object.assign(document.createElement("span"), { className: "tag" + (u.role === "admin" ? " admin" : ""), textContent: u.role === "admin" ? "管理员" : "用户" }));
+        tr.appendChild(td2);
+        var td3 = document.createElement("td");
+        td3.appendChild(Object.assign(document.createElement("span"), { className: "tag " + (u.disabled ? "off" : "on"), textContent: u.disabled ? "已停用" : "正常" }));
+        tr.appendChild(td3);
+        var td4 = document.createElement("td"); td4.textContent = fmtTime(u.lastLogin); tr.appendChild(td4);
+        var td5 = document.createElement("td");
+        var qwrap = document.createElement("div"); qwrap.className = "ops";
+        var qin = document.createElement("input");
+        qin.type = "number"; qin.min = "1"; qin.max = "1024";
+        qin.value = Math.round((u.quotaBytes || 0) / 1073741824 * 100) / 100;
+        qin.style.cssText = "width:90px;padding:5px 8px;border-radius:6px;border:1px solid var(--g-line);background:var(--g-field);font:inherit;font-size:12.5px";
+        var qgo = document.createElement("button"); qgo.className = "btn"; qgo.textContent = "保存";
+        qgo.onclick = function () {
+          var v = Number(qin.value);
+          if (!Number.isFinite(v) || v <= 0 || v > 1024) { say("配额必须是 0~1024 之间的 GB 数", "bad"); return; }
+          qgo.disabled = true;
+          api("/admin/users/storage", { method: "POST", body: { username: u.username, quotaGB: v } }).then(function (r) {
+            qgo.disabled = false;
+            if (r.ok && r.j && r.j.ok) { say(u.username + " 的云存储配额已设为 " + v + " GB（立即生效）", "ok"); load(); }
+            else { say("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
+          }).catch(function () { qgo.disabled = false; say("网络错误", "bad"); });
+        };
+        if (u.quotaOverride) qwrap.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: "自定义" }));
+        qwrap.appendChild(qin); qwrap.appendChild(qgo); td5.appendChild(qwrap); tr.appendChild(td5);
+        var td5 = document.createElement("td"); td5.className = "ops";
+        var toggle = document.createElement("button");
+        toggle.className = "act"; toggle.textContent = u.disabled ? "启用" : "停用";
+        toggle.onclick = function () {
+          confirmBox(u.disabled ? "启用账号" : "停用账号", "确定要" + (u.disabled ? "启用" : "停用") + "「" + u.username + "」吗？" + (u.disabled ? "" : "该用户会立即被踢下线且无法登录。")).then(function (ok) {
+            if (!ok) return;
+            api("/admin/users/toggle", { method: "POST", body: { username: u.username, disabled: !u.disabled } })
+              .then(function (r) { if (r.ok) { say("已" + (u.disabled ? "启用" : "停用") + " " + u.username, "ok"); load(); } else say(r.j && r.j.error || "失败", "bad"); });
+          });
+        };
+        td5.appendChild(toggle);
+        var reset = document.createElement("button");
+        reset.className = "act"; reset.textContent = "重置密码";
+        reset.onclick = function () {
+          confirmBox("重置密码", "给「" + u.username + "」设置一个新密码（至少 8 位）：", "新密码").then(function (pw) {
+            if (!pw) return;
+            api("/admin/users/reset", { method: "POST", body: { username: u.username, password: pw } })
+              .then(function (r) { if (r.ok) { say("已重置 " + u.username + " 的密码", "ok"); } else say(r.j && r.j.error || "失败", "bad"); });
+          });
+        };
+        td5.appendChild(reset);
+        var del = document.createElement("button");
+        del.className = "act danger"; del.textContent = "删除";
+        del.onclick = function () {
+          confirmBox("删除账号", "⚠ 不可恢复：确定删除「" + u.username + "」？").then(function (ok) {
+            if (!ok) return;
+            api("/admin/users/delete", { method: "POST", body: { username: u.username } })
+              .then(function (r) { if (r.ok) { say("已删除 " + u.username, "ok"); load(); } else say(r.j && r.j.error || "失败", "bad"); });
+          });
+        };
+        td5.appendChild(del);
+        tr.appendChild(td5);
+        rows.appendChild(tr);
+      })(users[i]);
+    }
+    $("who").textContent = "管理员：" + me;
+  }
+
+  function load() {
+    if (typeof loadPoints === "function") loadPoints("");
+    loadUpstream(); loadDisk();
+    api("/admin/users").then(function (r) {
+      if (r.status === 401 || r.status === 403) { try { localStorage.removeItem("chc-session"); } catch (e) { /* 忽略 */ } window.location.replace("account.html#admin"); return; }
+      if (!r.ok) { say(r.j && r.j.error || "加载失败", "bad"); return; }
+      /* 10-15：管理功能已迁入用户中心，本页不再自渲染 */
+      window.location.replace("account.html#admin");
+      return;
+    });
+  }
+
+  function showGate(message) {
+    try { localStorage.removeItem("chc-session"); } catch (e) { /* 忽略 */ }
+    session = null;
+    $("panel").hidden = true; $("gate").hidden = false;
+    $("gate-status").textContent = message || "";
+  }
+
+  $("go").onclick = function () {
+    var u = $("u").value.trim(), p = $("p").value;
+    if (!u || !p) { $("gate-status").textContent = "请填用户名和密码"; return; }
+    $("gate-status").textContent = "登录中…";
+    api("/login", { method: "POST", body: { username: u, password: p } }).then(function (r) {
+      if (!r.ok || !r.j.ok) { $("gate-status").textContent = r.j && r.j.error || "登录失败"; return; }
+      if (r.j.account.role !== "admin") { $("gate-status").textContent = "该账号不是管理员"; return; }
+      session = r.j.token;
+      try { localStorage.setItem("chc-session", session); } catch (e) { /* 忽略 */ }
+
+    window.location.replace("account.html#admin");
+    return;      load();
+    }).catch(function () { $("gate-status").textContent = "账号服务不可达"; });
+  };
+  $("p").addEventListener("keydown", function (e) { if (e.key === "Enter") $("go").click(); });
+  $("logout").onclick = function () {
+    api("/logout", { method: "POST" }).catch(function () { /* 忽略 */ });
+    showGate("已退出");
+  };
+
+  // 进页先拿会话试一次
+  if (session) {
+    api("/me").then(function (r) {
+      if (r.ok && r.j.ok && r.j.account.role === "admin") load();
+      else showGate("该账号不是管理员");
+    }).catch(function () { showGate("账号服务不可达"); });
+  } else showGate("");
+})();
+</script>
+</body>
+</html>
