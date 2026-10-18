@@ -37,6 +37,17 @@ const UPDATE_MIRRORS = [
   { name: "moeyy（国内）", prefix: "https://github.moeyy.xyz/" },
   { name: "直连（兜底）", prefix: "" },
 ];
+/** 版本比较（只比 x.y.z 数字段）：a>b 返回正数。
+ *  ⛔ 不要字符串比较 —— "1.0.10" < "1.0.9" 会判错，用户就一直以为没有新版本。 */
+function cmpVersion(a, b) {
+  const pa = String(a || "").replace(/^v/, "").split(".").map((n) => Number(n) || 0);
+  const pb = String(b || "").replace(/^v/, "").split(".").map((n) => Number(n) || 0);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
 const DATA_FILE = process.env.HARNESS_ACCOUNTS_FILE || path.join(__dirname, "data.json");
 /* ── 配额（单一真相源；界面文案从 /sync/usage 与 /device/list 读，别在前端再写一份） ── */
 const DEVICE_LIMIT = Number(process.env.HARNESS_DEVICE_LIMIT || 3);                       // 每账号最多绑定机器数
@@ -951,21 +962,31 @@ const server = http.createServer(async (req, res) => {
      服务端按「国内镜像 → 直连」顺序读 raw 的 VERSION（不占 API 配额）。 */
   if (p === "/api/updates" && req.method === "GET") {
     const rawUrl = REPO_URL.replace("https://github.com/", "https://raw.githubusercontent.com/") + "/main/VERSION";
-    const tried = [];
-    for (const m of UPDATE_MIRRORS) {
-      const url = m.prefix + rawUrl;
+    const probeOne = async (m) => {
       const t0 = Date.now();
       try {
-        const r = await fetch(url, { signal: AbortSignal.timeout(6000), headers: { "Cache-Control": "no-cache" } });
+        const r = await fetch(m.prefix + rawUrl + "?t=" + Date.now(), { signal: AbortSignal.timeout(6000), headers: { "Cache-Control": "no-cache" } });
         const text = r.ok ? (await r.text()).trim() : "";
         const latest = (text.match(/^v?\d+\.\d+\.\d+/) || [])[0] || "";
-        tried.push({ name: m.name, ok: Boolean(latest), status: r.status, ms: Date.now() - t0, error: latest ? "" : explainProbeStatus(r.status) });
-        if (latest) return send(200, { ok: true, current: APP_VERSION, latest, source: m.name, tried, repo: REPO_URL });
+        return { name: m.name, ok: Boolean(latest), status: r.status, ms: Date.now() - t0, latest, error: latest ? "" : explainProbeStatus(r.status) };
       } catch (error) {
-        tried.push({ name: m.name, ok: false, status: 0, ms: Date.now() - t0, error: classifyFetchError(error) });
+        return { name: m.name, ok: false, status: 0, ms: Date.now() - t0, latest: "", error: classifyFetchError(error) };
       }
+    };
+    /* ⛔⛔ 并行问所有源、**取最高版本** —— 不能"第一个成功就返回"：
+       镜像缓存滞后会给出旧版本（实测 ghfast 返旧值，gh-proxy 才是最新）。 */
+    const tried = await Promise.all(UPDATE_MIRRORS.map(probeOne));
+    const good = tried.filter((t) => t.ok);
+    if (!good.length) {
+      return send(200, { ok: false, current: APP_VERSION, tried, repo: REPO_URL, message: "所有源都失败（含国内镜像）—— 直接打开仓库页看最新 tag" });
     }
-    return send(200, { ok: false, current: APP_VERSION, tried, repo: REPO_URL, message: "所有源都失败（含国内镜像）—— 直接打开仓库页看最新 tag" });
+    const best = good.reduce((a, b) => (cmpVersion(b.latest, a.latest) > 0 ? b : a));
+    return send(200, {
+      ok: true, current: APP_VERSION,
+      latest: best.latest, source: best.name,
+      sources: good.map((x) => `${x.name}=${x.latest}`),
+      tried, repo: REPO_URL,
+    });
   }
   const readBody = () => new Promise((resolve, reject) => {
     let raw = ""; req.on("data", (c) => { raw += c; if (raw.length > 64 * 1024) { reject(new Error("too-large")); req.destroy(); } });
