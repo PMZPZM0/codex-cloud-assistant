@@ -267,3 +267,173 @@ journalctl -t ppz-tunnel --since today         # 看门狗记录的断线起点
 **判据记忆法**：根路径 502 ⇒ 服务端；只有特定路径 4xx ⇒ 客户端协议/参数/密钥。
 `token in login doesn't match` 这类登录失败**多半是公网扫描器**（无 hostname、云 IP、版本对不上），
 不要当成用户侧证据 —— 认 **同一个 client id + hostname** 才算。
+
+---
+
+## 7. 把「三件套 + 云管理」合并到一台服务器（迁移方案）
+
+> 现状常是四件东西分两处：**服务器**跑「云管理 + 上游中继」，**家里那台**跑「记忆空间 + 知识库 + 记忆网关」，
+> 中间一条 frp 隧道。本节就是把后三个搬到服务器、最终撤掉隧道的完整动作。
+
+### 7.1 目标拓扑（全部落在同一台机：只暴露 443）
+
+```
+                    ┌──────────────── 一台服务器 ────────────────┐
+ 客户端 ──https──>  │ Caddy (443)                                │
+                    │  ├ /cloud-api/*        → 127.0.0.1:8091  云管理 API
+                    │  ├ ppz→ 静态面板        → web/             云管理面板
+                    │  ├ /claude-code/*      → 127.0.0.1:8096  记忆网关（注入 L2/L3）
+                    │  ├ mem.<域名>          → 127.0.0.1:8125  记忆空间面板
+                    │  └ kb.<域名>           → 127.0.0.1:8082  知识库前端
+                    │       记忆网关 ──> 127.0.0.1:18081 上游中继 ──> LLM
+                    └────────────────────────────────────────────┘
+```
+
+### 7.2 端口 / 数据对照（以你实际部署为准，先 `docker ps` 核对）
+| 组件 | 典型端口 | 关键数据（必须迁） |
+|---|---|---|
+| 记忆网关 proxy | 8096 | 配置（LLM_BASE_URL/KEY）、账号与 Team 元数据、`.admin-key` |
+| 记忆空间 Memory Hub | 8125（面板）/ 8420（core） | 记忆库数据卷（Postgres / 向量索引） |
+| 知识库 WeKnora | 8083（API）/ 8082（前端） | 租户与知识库数据卷（PG + 向量库 + 上传件） |
+| 云管理（本仓） | 8091 | `data/data.json`（用户/积分/模型目录） |
+| 上游中继 | 18081 | 自有密钥库（`manager.db` 等） |
+
+#### 资源预算（合并到一台够不够）
+
+| 组件 | CPU | 内存 | 磁盘 | 说明 |
+|---|---|---|---|---|
+| Caddy | 0.1 核 | ~100 MB | 证书 + 日志，忽略 | — |
+| 云管理 `server-account` | 0.2 核 | ~200 MB | 几 MB（`data.json`） | 纯 Node，零依赖 |
+| 记忆网关 proxy | 0.5 核 | 0.5–1 GB | < 5 GB | 只做转发 + 注入，不吃盘 |
+| 记忆空间 Memory Hub | 2 核 | 2–4 GB | 50–200 GB | PG + 向量索引，随记忆条目增长 |
+| 知识库 WeKnora | 2–4 核 | 4–8 GB（本地跑 embedding 再加 2–4 GB） | 100 GB–1 TB+ | 上传件是大头，按用户量线性涨 |
+| 上游中继 | 0.5 核 | ~0.5 GB | 忽略 | 只做转发与计费记账 |
+| **合计** | **约 6–8 核** | **约 8–14 GB** | **约 0.2–1.5 TB** | — |
+
+结论：**一台 8C / 16G / 1T 起的机器就能全放下**；磁盘是「10T 级」的话余量非常充足
+（真正会先顶到的是**内存**——WeKnora 的嵌入与向量检索、以及 PG 的 shared_buffers，
+不是磁盘）。若知识库要本地跑 embedding 模型，按上面括号再加 2–4 GB 内存。
+
+⛔ 单机部署的边界：**所有服务共用一个 Docker daemon 与一条公网入口**，
+所以务必备份数据卷（7.8 的回滚只保服务，不保数据），并给每个容器设 `restart: always`。
+
+### 7.3 第 0 步：准备（只读，不影响线上）
+
+```bash
+# 在「家里那台」上：把要迁的东西盘点清楚
+docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}'
+docker inspect <容器> --format '{{json .Mounts}}' | jq -r '.[] | "\(.Type)\t\(.Name // .Source)\t\(.Destination)"'
+docker inspect <容器> --format '{{json .Config.Env}}' | jq -r '.[]' > /tmp/<容器>.env.txt   # ⛔ 含密钥，别提交
+```
+
+把上面三条的输出存成一份迁移清单（镜像 tag、数据卷名、env 键名），后面按清单逐项搬。
+
+### 7.4 第 1 步：先迁记忆网关（影响面最小，单独可回退）
+
+```bash
+# 源机：导出（镜像 + 配置）
+docker save <proxy 镜像> | gzip > proxy.tgz
+tar czf proxy-data.tgz -C <数据卷父目录> <数据卷名>
+
+scp proxy.tgz proxy-data.tgz <user>@<服务器>:/tmp/
+
+# 目标机：导入并起服务（只绑回环，公网仍由 Caddy 进）
+docker load < /tmp/proxy.tgz
+docker volume create proxy-data && tar xzf /tmp/proxy-data.tgz -C /var/lib/docker/volumes/proxy-data/_data
+
+cat >/opt/memory-proxy/docker-compose.yml <<'YAML'
+services:
+  memory-proxy:
+    image: <proxy 镜像>
+    restart: always
+    ports: ["127.0.0.1:8096:8096"]
+    env_file: /opt/memory-proxy/proxy.env        # LLM_BASE_URL/LLM_API_KEY/INSTANCE_ID 等
+    volumes: ["proxy-data:/data"]
+volumes: { proxy-data: {} }
+YAML
+cd /opt/memory-proxy && docker compose up -d
+curl -s http://127.0.0.1:8096/health             # 期望 {"status":"ok",...}
+```
+
+**切换**（只改一个站点的上游，秒级回退）：
+
+```bash
+sudo cp /etc/caddy/<sites>.caddy /etc/caddy/<sites>.caddy.bak-$(date +%Y%m%d-%H%M)
+sudo sed -i '/memapi\.<域名>/,/^}/ s|127\.0\.0\.1:18080|127.0.0.1:8096|' /etc/caddy/<sites>.caddy
+sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+curl -s https://memapi.<域名>/health             # 期望 ok
+curl -s https://memapi.<域名>/claude-code/default/v1/models   # 期望鉴权错误，⛔ 不是 502
+```
+
+到这里**模型通道已脱离家里那台机器**；记忆空间/知识库仍可暂时走隧道，互不影响。
+
+### 7.5 第 2 步：迁记忆空间 + 知识库（带数据，需要停写窗口）
+
+这两个是「有状态」的，⛔ 不能只搬镜像，必须连数据卷一起搬，且**先停写再导**：
+
+```bash
+# 源机（建议 10–30 分钟窗口，期间面板/检索不可用）
+docker stop <hub容器> <kb容器> <kb-pg容器>
+docker save <hub镜像> <kb镜像> <pg镜像> | gzip > stacks.tgz
+for v in <hub卷> <kb卷> <pg卷>; do docker run --rm -v $v:/v -v /tmp:/b alpine tar czf /b/$v.tgz -C /v .; done
+scp stacks.tgz *.tgz <user>@<服务器>:/tmp/
+docker start <hub容器> <kb容器> <kb-pg容器>     # 源机先恢复服务，别长停
+```
+
+目标机按清单 `docker load` + 重建同名卷 + 用**同一份 compose**（改端口为回环）起容器，然后：
+
+```bash
+curl -sI http://127.0.0.1:8125/    # 记忆空间面板
+curl -sI http://127.0.0.1:8082/    # 知识库前端
+```
+
+⚠️ 三个高频坑：
+1. **卷权限**：`tar` 解出来属主常常不对（尤其 PG，UID 必须保持容器内的），解压后 `chown -R 999:999`（PG）或按镜像文档；
+2. **端口占用**：目标机若已有同名端口进程，先 `ss -lntp` 核对，别盲目 `docker compose up`；
+3. **HTTPS/域名**：面板里如果存了绝对地址（回调、Webhook），迁完要一并改，否则登录会跳回旧域名。
+
+### 7.6 第 3 步：Caddy 切流 + 撤隧道
+
+```bash
+# 三个站点全部改为本机端口
+sudo sed -i 's|127.0.0.1:18080|127.0.0.1:8096|'  # memapi
+sudo sed -i '/mem\.<域名>/,/^}/ s|127.0.0.1:18080|127.0.0.1:8125|' <sites>.caddy
+sudo sed -i '/kb\.<域名>/,/^}/ s|127.0.0.1:18080|127.0.0.1:8082|' <sites>.caddy
+sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+```
+
+全部验证通过后，再撤隧道（**顺序不能反**）：
+
+```bash
+sudo systemctl stop frps && sudo systemctl disable frps     # 服务器侧
+# 家里那台：停掉 frpc 容器（保留，别删，方便回滚）
+```
+
+### 7.7 验收清单（逐条打勾再撤隧道）
+
+```bash
+for u in https://memapi.<域名>/health https://mem.<域名>/ https://kb.<域名>/ \
+         https://<主域>/account.html https://<主域>/cloud-api/<任一只读接口>; do
+  printf '%s -> ' "$u"; curl -s -o /dev/null -w '%{http_code}\n' "$u"
+done
+# 再确认没有任何响应再经过旧 NPM：应当只剩一层 Server: Caddy
+curl -sI https://mem.<域名>/ | grep -ci openresty      # 期望 0
+```
+
+⚠️ 迁移窗口内**别同时重启云管理**：客户端登录态在 `8091`，一并抖动会让人误判成迁移失败。
+
+### 7.8 回滚（任一步失败，5 分钟内恢复）
+
+| 失败点 | 回滚动作 |
+|---|---|
+| 网关起不来 | `docker compose down`，Caddy 恢复备份文件 `reload`，隧道仍在 ⇒ 立刻恢复原状 |
+| 面板/知识库数据不对 | 目标机 `docker compose down`，Caddy 的 mem/kb 两站点恢复 `127.0.0.1:18080` |
+| 全线异常 | `sudo systemctl enable --now frps` + 家里那台启 frpc ⇒ 回到方案 C（隧道形态） |
+
+⛔ 全程保留：Caddy 配置备份、源机容器与数据卷（迁完一周再清理）。
+
+### 7.9 迁移后的收益
+
+- 少一个跨公网单点：家里那台机器重启/换网/运营商掉线，**不再影响线上**；
+- 延迟少一跳（少了 frp 中转），面板与检索的首屏明显更快；
+- 一处备份：数据卷、配置、证书都在同一台，恢复演练变简单。
