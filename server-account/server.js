@@ -1400,7 +1400,10 @@ const server = http.createServer(async (req, res) => {
        拉 WBM /api/model-catalog，归一化成客户端要的字段；credits（积分倍率）原样保留 ——
        ⛔ 倍率是"消耗速度随模型而定"的**唯一真相源**，本服务只转发不重写。 */
     async function pullModelCatalog(force = false) {
-      const fresh = Date.now() - Number(db.modelCatalog.syncedAt || 0) < MODEL_SYNC_TTL_MS;
+      /* ⛔ 10-22 用户：「我都换了，没有自动跟随更新」——缓存只按时间算：换上游地址后 30 分钟内
+         仍命中旧缓存 ⇒ 永远不同步新地址。fresh 必须同时要求「目录来自当前这个上游」。 */
+      const sameBase = (db.modelCatalog.base || "") === currentCatalogBase();
+      const fresh = sameBase && Date.now() - Number(db.modelCatalog.syncedAt || 0) < MODEL_SYNC_TTL_MS;
       if (!force && fresh && Array.isArray(db.modelCatalog.list) && db.modelCatalog.list.length) return { ok: true, cached: true };
       /* ⛔ 用 currentCatalogBase()（管理员可配），**不是** WBM_BASE 常量 ——
          否则"改了上游地址、点同步却还是拉旧地址"（配了没用，10-18 实测就是这个坑）。 */
@@ -1529,6 +1532,9 @@ const server = http.createServer(async (req, res) => {
           source: source === "openai" ? "openai-compat" : String((data && (data.source_label || data.source)) || "catalog"),
           catalogSource: source,
           rateSource: rates.source || "",
+          /* 10-22 用户：「我都换了，没有自动跟随更新」——记下这份目录是**哪个上游**拉的，
+             换地址后同步失败仍会保留旧目录，但面板必须能指出「这是旧上游的」。 */
+          base: catalogBase,
           list,
           ...(prevAvail ? { available: prevAvail.filter((x) => ids.has(x)) } : {}),
         };
@@ -1934,6 +1940,9 @@ const server = http.createServer(async (req, res) => {
            面板据此显示「到底在从哪个地址拉目录」，不然报错只说「没给出列表」，排查无从下手。 */
         catalogBase: currentCatalogBase(),
         rateSource: db.modelCatalog.rateSource || "",
+        catalogFrom: db.modelCatalog.base || "",
+        /* ⛔ 目录来源 ≠ 当前上游 ⇒ 面板显示「已过期」，而不是静默保留旧目录让用户以为没生效。 */
+        stale: Boolean(db.modelCatalog.base && db.modelCatalog.base !== currentCatalogBase()),
         users,
       });
     }

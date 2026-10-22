@@ -648,6 +648,8 @@
       </p>
       <!-- 10-22：把「到底从哪个地址、哪个来源拉的目录」摊开 —— 报错只说「没给出列表」时无从排查。 -->
       <p class="hint" id="amSource"></p>
+      <!-- 10-22：上游换了但目录还是旧的（同步失败会保留旧目录）⇒ 必须显式提示，不能静默。 -->
+      <p class="hint" id="amStale" style="color:var(--warn);display:none"></p>
       <!-- 闲时时段编辑区：默认折叠（标题行「设置」展开）。⛔ 只定义时间，倍率在下面表格里按模型填。 -->
       <div id="opEditor" style="display:none">
         <p class="hint" style="margin:0 0 8px">
@@ -1913,6 +1915,15 @@
       if (!r.ok || !r.j || !r.j.ok) { amSay("模型目录读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
       amData = r.j;
       /* 10-22：显示「目录来源 + 实际上游地址 + 上次同步时间」，同步失败时一眼看出拉的是哪个地址。 */
+      if ($("amStale")) {
+        if (r.j.stale) {
+          $("amStale").style.display = "";
+          $("amStale").textContent = "目录已过期：下面是「" + (r.j.catalogFrom || "旧上游") + "」同步来的，当前上游「" + (r.j.catalogBase || "未配置") + "」没给出模型列表。点右上角「重新同步目录」重试，或把上游改回可用地址。";
+        } else {
+          $("amStale").style.display = "none";
+          $("amStale").textContent = "";
+        }
+      }
       if ($("amSource")) {
         $("amSource").textContent = "目录来源：" + (r.j.source || "未同步")
           + (r.j.rateSource ? " · 倍率来源：" + r.j.rateSource : "")
