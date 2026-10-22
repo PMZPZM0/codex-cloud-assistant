@@ -671,9 +671,17 @@
         </div>
         <p class="status" id="opStatus"></p>
       </div>
+      <!-- 10-22：批量管理 —— 勾选多个模型后统一改倍率 / 恢复上游，不用一行一行点。 -->
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 6px">
+        <span class="hint" id="amBatchCount">已选 0 个</span>
+        <input id="amBatchCredits" placeholder="倍率，如 0.29（留空=免费）" style="width:200px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text)" />
+        <button class="btn sm" id="amBatchApply">批量设倍率</button>
+        <button class="btn sm" id="amBatchReset">批量恢复上游</button>
+        <span class="hint">（批量改过的模型会打「已钉」，同步不覆盖）</span>
+      </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>模型</th><th>ID</th><th>高峰倍率<span class="qm" id="qmPeak" title="时段加载中…">?</span></th><th>改为</th><th>闲时倍率<span class="qm" id="qmOff" title="时段加载中…">?</span></th><th>闲时改为</th></tr></thead>
+          <thead><tr><th style="width:28px"><input type="checkbox" id="amAll" title="全选 / 全不选" /></th><th>模型</th><th>ID</th><th>高峰倍率<span class="qm" id="qmPeak" title="时段加载中…">?</span></th><th>改为</th><th>闲时倍率<span class="qm" id="qmOff" title="时段加载中…">?</span></th><th>闲时改为</th></tr></thead>
           <tbody id="amRows"></tbody>
         </table>
       </div>
@@ -1911,6 +1919,19 @@
   /* ── 模型管理（管理员：倍率 + 每用户可用模型）── */
   var amData = null;
   function amSay(text, cls) { var st = $("amStatus"); st.textContent = text; st.className = "status" + (cls ? " " + cls : ""); }
+  /* ── 10-22 批量管理：勾选状态只存 DOM（`.am-pick`），不跟渲染闭包耦合 ── */
+  function amPickedIds() {
+    return Array.prototype.map.call(document.querySelectorAll("#amRows .am-pick:checked"), function (cb) { return cb.value; });
+  }
+  function amSyncPick() {
+    if ($("amBatchCount")) $("amBatchCount").textContent = "已选 " + amPickedIds().length + " 个";
+  }
+  function amBatchPost(body, okText) {
+    api("/admin/models/batch", { method: "POST", body: body }).then(function (r) {
+      if (r.ok && r.j && r.j.ok) { amSay(okText(r.j), "ok"); loadAdminModels(); }
+      else amSay("批量操作失败：" + ((r.j && (r.j.message || r.j.error)) || r.status), "bad");
+    }).catch(function () { amSay("网络错误", "bad"); });
+  }
   function loadAdminModels(force) {
     /* force=true ⇒ 服务端强制重拉（绕缓存）；页面打开与定时刷新都用它。 */
     api("/admin/models" + (force ? "?refresh=1" : "")).then(function (r) {
@@ -1918,7 +1939,11 @@
       amData = r.j;
       /* 10-22：显示「目录来源 + 实际上游地址 + 上次同步时间」，同步失败时一眼看出拉的是哪个地址。 */
       if ($("amStale")) {
-        if (r.j.stale) {
+        if (r.j.autoSyncPaused) {
+          $("amStale").style.display = "";
+          $("amStale").style.color = "var(--warn)";
+          $("amStale").textContent = "目录已手动清空，自动同步暂停中 —— 点右上角「重新同步目录」或保存上游后恢复。";
+        } else if (r.j.stale) {
           $("amStale").style.display = "";
           $("amStale").textContent = "目录已过期：下面是「" + (r.j.catalogFrom || "旧上游") + "」同步来的，当前上游「" + (r.j.catalogBase || "未配置") + "」没给出模型列表。点右上角「重新同步目录」重试，或把上游改回可用地址。";
         } else {
@@ -1933,6 +1958,8 @@
           + (r.j.syncedAt ? " · 上次同步 " + new Date(r.j.syncedAt).toLocaleString() : "");
       }
       /* 10-22：目录空且最近一次同步失败 ⇒ 直接把原因说出来（原来只显示空表，管理员以为「没模型」）。 */
+      if ($("amAll")) $("amAll").checked = false;
+      amSyncPick();
       if (!(r.j.list || []).length && r.j.syncError) {
         amSay("模型目录为空：" + (r.j.syncMessage || r.j.syncError) + "（到「上游 API」点「测试连通性」核对地址与密钥）", "bad");
       }
@@ -1940,6 +1967,11 @@
       var box = $("amRows"); box.innerHTML = "";
       (r.j.list || []).forEach(function (m) {
         var tr = document.createElement("tr");
+        var tdPick = document.createElement("td");
+        var cb = document.createElement("input");
+        cb.type = "checkbox"; cb.className = "am-pick"; cb.value = m.id; cb.title = "选择 " + m.id;
+        tdPick.appendChild(cb);
+        tr.appendChild(tdPick);
         tr.appendChild(Object.assign(document.createElement("td"), { textContent: m.name || m.id }));
         var tdId = document.createElement("td");
         tdId.appendChild(Object.assign(document.createElement("code"), { textContent: m.id, style: "font-size:12px;color:var(--muted)" }));
@@ -2090,6 +2122,25 @@
       amSay("已导出 " + payload.models.length + " 个模型（含上游倍率与闲时倍率）", "ok");
     }).catch(function () { btn.disabled = false; amSay("导出失败：网络错误", "bad"); });
   };
+  if ($("amAll")) $("amAll").onchange = function () {
+    var on = $("amAll").checked;
+    Array.prototype.forEach.call(document.querySelectorAll("#amRows .am-pick"), function (cb) { cb.checked = on; });
+    amSyncPick();
+  };
+  if ($("amRows")) $("amRows").addEventListener("change", function (event) {
+    if (event.target && event.target.classList && event.target.classList.contains("am-pick")) amSyncPick();
+  });
+  if ($("amBatchApply")) $("amBatchApply").onclick = function () {
+    var ids = amPickedIds();
+    if (!ids.length) { amSay("先勾选模型（可用表头复选框全选）", "bad"); return; }
+    var credits = $("amBatchCredits") ? $("amBatchCredits").value.trim() : "";
+    amBatchPost({ ids: ids, credits: credits }, function (j) { return "已批量设置 " + j.updated + " 个模型的倍率为 " + (j.credits || "免费") + "（已钉住）"; });
+  };
+  if ($("amBatchReset")) $("amBatchReset").onclick = function () {
+    var ids = amPickedIds();
+    if (!ids.length) { amSay("先勾选模型（可用表头复选框全选）", "bad"); return; }
+    amBatchPost({ ids: ids, reset: true }, function (j) { return "已把 " + j.updated + " 个模型恢复为上游倍率"; });
+  };
   /* 10-22 用户：「自动刷新缓存」——进页面先强制刷一次，之后每 2 分钟静默刷一次（仅页面可见时）。 */
   setTimeout(function () { try { loadAdminModels(true); } catch (e) {} }, 0);
   setInterval(function () {
@@ -2099,12 +2150,26 @@
   }, 120000);
   if ($("amClear")) $("amClear").onclick = function () {
     if (!confirm("确认清空模型目录？清空后用户端会暂时看不到模型，直到你重新同步或改回可用上游。\n（不动用户自己的勾选与积分流水）")) return;
-    $("amClear").disabled = true;
+    $("amClear").disabled = true; $("amClear").textContent = "清空中…";
     api("/admin/models/clear", { method: "POST", body: { confirm: true } }).then(function (r) {
-      $("amClear").disabled = false;
-      if (r.ok && r.j && r.j.ok) { amSay("已清空模型目录（原有 " + (r.j.cleared || 0) + " 个）", "ok"); loadAdminModels(); }
-      else amSay("清空失败：" + ((r.j && r.j.error) || r.status), "bad");
-    }).catch(function () { $("amClear").disabled = false; amSay("网络错误", "bad"); });
+      $("amClear").disabled = false; $("amClear").textContent = "清空目录";
+      if (r.ok && r.j && r.j.ok) {
+        /* 乐观清表：不等下一次请求，先把行删掉，避免「点了没反应」的观感。 */
+        if ($("amRows")) $("amRows").innerHTML = "";
+        amSay("已清空模型目录（原有 " + (r.j.cleared || 0) + " 个）· 自动同步已暂停", "ok");
+        if ($("amStale")) {
+          $("amStale").style.display = "";
+          $("amStale").style.color = "var(--ok)";
+          $("amStale").textContent = "目录已清空（原有 " + (r.j.cleared || 0) + " 个）。自动同步已暂停 —— 点右上角「重新同步目录」或保存上游后才会重新拉取。";
+        }
+        loadAdminModels();
+      } else {
+        var why = (r.j && (r.j.message || r.j.error)) || ("HTTP " + r.status);
+        if (r.status === 404) why = "服务端还没有这个接口（请更新到 1.0.13+ 并重启）";
+        if ($("amStale")) { $("amStale").style.display = ""; $("amStale").style.color = "var(--bad)"; $("amStale").textContent = "清空失败：" + why; }
+        amSay("清空失败：" + why, "bad");
+      }
+    }).catch(function () { $("amClear").disabled = false; $("amClear").textContent = "清空目录"; amSay("网络错误", "bad"); });
   };
   if ($("amSync")) $("amSync").onclick = function () {
     $("amSync").disabled = true; amSay("正在同步目录…");

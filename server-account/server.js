@@ -1926,9 +1926,11 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody();
       if (!body || body.confirm !== true) return send(400, { ok: false, error: "需要确认（confirm: true）" });
       const before = Array.isArray(db.modelCatalog.list) ? db.modelCatalog.list.length : 0;
-      db.modelCatalog = { syncedAt: 0, list: [], available: [], base: "", rateSource: "", catalogSource: "" };
+      /* ⛔ 10-22：清空后必须**暂停自动同步** —— 否则面板一刷新就按当前上游重新拉满，
+         用户看到的就是「点了清空没反应」。只有手动「重新同步目录」/保存上游才解除。 */
+      db.modelCatalog = { syncedAt: 0, list: [], available: [], base: "", rateSource: "", catalogSource: "", autoSyncDisabled: true };
       persist();
-      console.log(`[catalog] ${me.username} 清空模型目录（原有 ${before} 个）`);
+      console.log(`[catalog] ${me.username} 清空模型目录（原有 ${before} 个，自动同步已暂停）`);
       return send(200, { ok: true, cleared: before });
     }
     /* 管理员：立刻重新拉取模型目录（force 绕过缓存） */
@@ -1945,7 +1947,9 @@ const server = http.createServer(async (req, res) => {
       /* 10-22 用户：「自动刷新缓存」——面板带 ?refresh=1 时强制重拉（绕 30 分钟 TTL），
          用来「打开页面就刷新 / 每两分钟自动刷一次」；不带参数仍走 TTL，避免客户端请求打爆上游。 */
       const forceRefresh = /(?:^|&)refresh=1(?:&|$)/.test(String(req.url || "").split("?")[1] || "");
-      const autoPulled = await pullModelCatalog(forceRefresh).catch(() => null);
+      /* 用户手动清空过 ⇒ 不自动拉（否则立刻被填回来）；手动刷新/保存上游不受限制。 */
+      const held = Boolean(db.modelCatalog.autoSyncDisabled) && !forceRefresh;
+      const autoPulled = held ? null : await pullModelCatalog(forceRefresh).catch(() => null);
       const users = db.users.map((u) => ({
         username: u.username,
         role: u.role,
@@ -1965,6 +1969,7 @@ const server = http.createServer(async (req, res) => {
         catalogBase: currentCatalogBase(),
         rateSource: db.modelCatalog.rateSource || "",
         catalogFrom: db.modelCatalog.base || "",
+        autoSyncPaused: Boolean(db.modelCatalog.autoSyncDisabled),
         /* ⛔ 目录来源 ≠ 当前上游 ⇒ 面板显示「已过期」，而不是静默保留旧目录让用户以为没生效。 */
         stale: Boolean(db.modelCatalog.base && db.modelCatalog.base !== currentCatalogBase()),
         users,
@@ -2033,6 +2038,41 @@ const server = http.createServer(async (req, res) => {
       persist();
       console.log(`[admin] ${me.username} 将模型 ${id} 的倍率设为 ${credits || "免费"}${opRate === null ? "、闲时系数=跟随全局" : opRate !== undefined ? `、闲时系数=${opRate}` : ""}（已钉住，同步不覆盖）`);
       return send(200, { ok: true, id, credits, locked: true, offPeakRate: item.offPeakRate === undefined ? null : item.offPeakRate });
+    }
+    /* 管理员：**批量**改倍率 / 批量恢复上游（10-22 用户：「模型管理加一个批量管理功能」）。
+       ⛔ 与单条 /admin/models/credits 同一套归一化与「钉住」语义，只是作用在多个 id 上；
+       ⛔ 先全量校验再落字段（中途 400 不能留下半截状态）。 */
+    if (p === "/admin/models/batch" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const body = await readBody();
+      const ids = Array.isArray(body && body.ids) ? body.ids.map((x) => String(x).trim()).filter(Boolean) : [];
+      if (!ids.length) return send(400, { ok: false, error: "没有选择模型" });
+      const wanted = new Set(ids);
+      const targets = (db.modelCatalog.list || []).filter((m) => wanted.has(m.id));
+      if (!targets.length) return send(404, { ok: false, error: "选中的模型不在目录里（先同步目录）" });
+      if (body && body.reset === true) {
+        for (const item of targets) {
+          item.credits = String(item.upstreamCredits || "");
+          delete item.creditsLocked;
+        }
+        persist();
+        console.log(`[admin] ${me.username} 批量恢复上游倍率 ${targets.length} 个模型`);
+        return send(200, { ok: true, updated: targets.length, reset: true });
+      }
+      const rawCredits = String(body && body.credits === undefined ? "" : body.credits).trim();
+      let credits = "";
+      if (rawCredits && rawCredits !== "0") {
+        const n = Number(rawCredits.replace(/^x/i, ""));
+        if (!Number.isFinite(n) || n < 0) return send(400, { ok: false, error: "倍率必须是数字（如 0.29）或留空表示免费" });
+        credits = "x" + String(n);
+      }
+      for (const item of targets) {
+        item.credits = credits;
+        item.creditsLocked = true;
+      }
+      persist();
+      console.log(`[admin] ${me.username} 批量把 ${targets.length} 个模型的倍率设为 ${credits || "免费"}（已钉住）`);
+      return send(200, { ok: true, updated: targets.length, credits });
     }
     /* ── 10-18 闲时（限时）倍率：管理员可改 ──────────────────────────────
        语义：**折扣系数，乘在模型倍率之上**。读取用于界面回显 + 显示当前命中窗口。 */
