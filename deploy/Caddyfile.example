@@ -1,0 +1,54 @@
+# Codex Harness 反代模板 —— 复制到 /etc/caddy/ 并替换 <域名>，然后在 /etc/caddy/Caddyfile 里 import
+#
+# 用法：
+#   sudo cp deploy/Caddyfile.example /etc/caddy/sites.caddy
+#   sudo nano /etc/caddy/sites.caddy          # 替换所有 <域名>
+#   grep -q 'sites.caddy' /etc/caddy/Caddyfile || echo 'import sites.caddy' | sudo tee -a /etc/caddy/Caddyfile
+#   sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
+# ⛔ 四条站点对应四个服务，端口不要写错：
+#    a.<域名>      → 云管理 8091（/cloud-api/* 走 API，其余走 web 静态）
+#    memapi.<域名> → 记忆网关 8096（客户端推理入口，必须剥掉 /<client>/<instance> 前缀）
+#    mem.<域名>    → 记忆空间面板 8125
+#    kb.<域名>     → 知识库前端 80
+#
+# ⛔ 迁移期若仍走 frp 隧道，就保持 reverse_proxy 127.0.0.1:18080（见文档 §5）。
+
+a.<域名> {
+	encode zstd gzip
+
+	# 账号 / 积分 / 模型目录 / 授权（云管理 API）
+	handle_path /cloud-api/* {
+		reverse_proxy 127.0.0.1:8091
+	}
+
+	# 管理面板（纯静态）
+	root * /opt/codex-cloud-admin/web
+	file_server
+}
+
+memapi.<域名> {
+	encode zstd gzip
+
+	# ⛔ 必须剥前缀：/<client>/<instance>/v1/messages → /v1/messages
+	#   不剥的话网关收到 /claude-code/default/v1/messages 会 404（不是 502，别误判）
+	handle_path /*/* {
+		reverse_proxy 127.0.0.1:8096 {
+			# 推理是 SSE 长连接：关掉缓冲，否则前端像卡住
+			flush_interval -1
+		}
+	}
+
+	# 兜底：网关自己的 /health 等根路径接口
+	reverse_proxy 127.0.0.1:8096
+}
+
+mem.<域名> {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8125
+}
+
+kb.<域名> {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:80
+}

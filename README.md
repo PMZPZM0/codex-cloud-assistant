@@ -74,18 +74,25 @@ docker run -d --name cca -p 8091:8091 \
 ### 方式 D：模型网关（另一套服务，按需）
 
 本仓只管「账号 / 积分 / 模型目录」；客户端真正发推理请求打的是**模型网关**（可带记忆注入）。
-网关要不要自己装、怎么装，见 **[`deploy/model-gateway.md`](deploy/model-gateway.md)**：
+网关要不要自己装、怎么装，见 **[`deploy/model-gateway.md`](deploy/model-gateway.md)**，配套两个文件：
 
-- **方案 A 全栈单机**：记忆代理 + 上游中继 + Caddy 全放一台服务器（一个 compose，带验证清单）；
-- **方案 B 仅模型通道**：不部署记忆，只把 `/claude-code/<instance>` 前缀剥掉直连中继
-  （⚠️ 先决条件：客户端发的是记忆代理签发的 `sk-mem-*`，中继只认自己的 key，不做换 key 映射会 401）；
-- **方案 C（frp 隧道）**：家里机器经隧道暴露的形态，附风险说明；
-- 开篇两张表：**组件一览（记忆空间 / 知识库的开源地址、许可）** 与 **两条链路怎么衔接**
-  （模型+记忆走网关、知识库走 MCP 端点，两套鉴权互不相通）；
-- **§8 飞牛 OS（fnOS）部署方案**：面板步骤 + fnOS 特有的四个坑（卷路径 / UID 999 / Docker 自启 / 防火墙）
-  + 「一台服务器 vs 飞牛」选型对照；
-- 还有 **第 7 章「把三件套 + 云管理合并到一台服务器」**：目标拓扑、资源预算（8C/16G 起就够，
-  磁盘不是瓶颈）、分三步迁移（先网关、再记忆空间/知识库、最后切流撤隧道）、验收清单与回滚表。
+- **[`deploy/Caddyfile.example`](deploy/Caddyfile.example)** —— 四条反代路由（云管理 / 网关 / 面板 / 知识库），
+  含「剥前缀」和 SSE 关缓冲这两个必做项；
+- **[`deploy/verify-all.sh`](deploy/verify-all.sh)** —— 验收脚本，`bash deploy/verify-all.sh <域名>`，
+  全绿才算部署完成（判据含「模型目录返回鉴权错误而不是 502」）。
+
+文档要点：
+
+- **组件与开源地址**：记忆空间/记忆中枢 = [TencentCloud/TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)（MIT，
+  镜像 `agentmemory/memory-core|hub|proxy`）、知识库 = [Tencent/WeKnora](https://github.com/Tencent/WeKnora)；
+- **两条链路衔接**：模型+记忆走网关（注入 L2/L3 后转发上游），知识库走 WeKnora 的 `/mcp/<endpointId>`，
+  两套鉴权互不相通；
+- **方案 A 一站式**：记忆三件套一条 `./start-all.sh`（交互填两组 LLM + 通路预检）→ WeKnora →
+  云管理 → 反代 → 验收，每步都给了「预期输出」；
+- **方案 B 仅模型通道**：先决条件（`sk-mem-*` 与中继 key 的换发）写死，不做会 401；
+- **方案 C frp 隧道**：家里机器的形态与风险；
+- **§6 飞牛 OS（fnOS）部署**：面板步骤 + 四个实证坑（卷路径 / UID 999 / Docker 自启 / 防火墙）；
+- **§7 迁移**：资源预算（8C16G 起够）、三步走、回滚表。
 
 ⛔ 若仍用 frp 隧道：客户端容器**必须** `restart: always`。真实事故：隧道客户端 13:00 退出、
 直到 16:43 机器重开才恢复，期间所有子域 502 而主站正常 —— 极难第一眼看出。
