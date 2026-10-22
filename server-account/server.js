@@ -2050,6 +2050,20 @@ const server = http.createServer(async (req, res) => {
       const wanted = new Set(ids);
       const targets = (db.modelCatalog.list || []).filter((m) => wanted.has(m.id));
       if (!targets.length) return send(404, { ok: false, error: "选中的模型不在目录里（先同步目录）" });
+      /* 批量删除（10-22 用户：「还有批量删除功能」）——从目录里移除选中模型；
+         ⛔ 必须显式 confirm；同时把它们从「对用户开放」里剔除，避免留下幽灵 id。 */
+      if (body && body.delete === true) {
+        if (body.confirm !== true) return send(400, { ok: false, error: "删除需要确认（confirm: true）" });
+        const beforeCount = (db.modelCatalog.list || []).length;
+        db.modelCatalog.list = (db.modelCatalog.list || []).filter((m) => !wanted.has(m.id));
+        if (Array.isArray(db.modelCatalog.available)) {
+          db.modelCatalog.available = db.modelCatalog.available.filter((id) => !wanted.has(id));
+        }
+        persist();
+        const removed = beforeCount - db.modelCatalog.list.length;
+        console.log(`[admin] ${me.username} 批量删除 ${removed} 个模型`);
+        return send(200, { ok: true, deleted: removed, remaining: db.modelCatalog.list.length });
+      }
       if (body && body.reset === true) {
         for (const item of targets) {
           item.credits = String(item.upstreamCredits || "");
@@ -2059,20 +2073,43 @@ const server = http.createServer(async (req, res) => {
         console.log(`[admin] ${me.username} 批量恢复上游倍率 ${targets.length} 个模型`);
         return send(200, { ok: true, updated: targets.length, reset: true });
       }
-      const rawCredits = String(body && body.credits === undefined ? "" : body.credits).trim();
+      /* 10-22 用户「闲时倍率设置不考虑到?」——批量也要能设/清**闲时系数**，语义与单条一致：
+         undefined = 不动；null = 清除（跟随全局）；数字 = 该模型自己的系数。 */
+      const hasCredits = body && body.credits !== undefined;
+      const hasOffPeak = body && body.offPeakRate !== undefined;
+      if (!hasCredits && !hasOffPeak) return send(400, { ok: false, error: "没有要修改的字段" });
       let credits = "";
-      if (rawCredits && rawCredits !== "0") {
-        const n = Number(rawCredits.replace(/^x/i, ""));
-        if (!Number.isFinite(n) || n < 0) return send(400, { ok: false, error: "倍率必须是数字（如 0.29）或留空表示免费" });
-        credits = "x" + String(n);
+      if (hasCredits) {
+        const rawCredits = String(body.credits === undefined ? "" : body.credits).trim();
+        if (rawCredits && rawCredits !== "0") {
+          const n = Number(rawCredits.replace(/^x/i, ""));
+          if (!Number.isFinite(n) || n < 0) return send(400, { ok: false, error: "倍率必须是数字（如 0.29）或留空表示免费" });
+          credits = "x" + String(n);
+        }
+      }
+      let opRate;
+      if (hasOffPeak) {
+        const rawOp = body.offPeakRate === null ? "" : String(body.offPeakRate).trim();
+        if (rawOp === "") opRate = null;
+        else {
+          const n = Number(rawOp.replace(/^x/i, ""));
+          if (!Number.isFinite(n) || n < 0) return send(400, { ok: false, error: "闲时倍率必须是数字（如 0.05）或留空表示跟随全局" });
+          opRate = n;
+        }
       }
       for (const item of targets) {
-        item.credits = credits;
-        item.creditsLocked = true;
+        if (hasCredits) {
+          item.credits = credits;
+          item.creditsLocked = true;
+        }
+        if (hasOffPeak) {
+          if (opRate === null) delete item.offPeakRate;
+          else item.offPeakRate = opRate;
+        }
       }
       persist();
-      console.log(`[admin] ${me.username} 批量把 ${targets.length} 个模型的倍率设为 ${credits || "免费"}（已钉住）`);
-      return send(200, { ok: true, updated: targets.length, credits });
+      console.log(`[admin] ${me.username} 批量更新 ${targets.length} 个模型：${hasCredits ? `倍率=${credits || "免费"}（已钉住）` : ""}${hasCredits && hasOffPeak ? "、" : ""}${hasOffPeak ? `闲时=${opRate === null ? "跟随全局" : opRate}` : ""}`);
+      return send(200, { ok: true, updated: targets.length, credits: hasCredits ? credits : undefined, offPeakRate: hasOffPeak ? opRate : undefined });
     }
     /* ── 10-18 闲时（限时）倍率：管理员可改 ──────────────────────────────
        语义：**折扣系数，乘在模型倍率之上**。读取用于界面回显 + 显示当前命中窗口。 */

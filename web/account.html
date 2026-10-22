@@ -689,7 +689,11 @@
         <input id="amBatchCredits" placeholder="倍率，如 0.29（留空=免费）" style="width:200px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text)" />
         <button class="btn sm" id="amBatchApply">批量设倍率</button>
         <button class="btn sm" id="amBatchReset">批量恢复上游</button>
-        <span class="hint">（批量改过的模型会打「已钉」，同步不覆盖）</span>
+        <input id="amBatchOffPeak" placeholder="闲时倍率，如 0.05（留空=跟随全局）" style="width:240px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text)" />
+        <button class="btn sm" id="amBatchOffPeakApply">批量设闲时</button>
+        <button class="btn sm" id="amBatchOffPeakClear">清除闲时</button>
+        <button class="btn sm" id="amBatchDelete" style="color:var(--bad);border-color:var(--bad)">批量删除</button>
+        <span class="hint">（批量改过的倍率会打「已钉」，同步不覆盖；删除只移除目录，不改上游）</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -2178,6 +2182,23 @@
     if (!ids.length) { amSay("先勾选模型（可用表头复选框全选）", "bad"); return; }
     var credits = $("amBatchCredits") ? $("amBatchCredits").value.trim() : "";
     amBatchPost({ ids: ids, credits: credits }, function (j) { return "已批量设置 " + j.updated + " 个模型的倍率为 " + (j.credits || "免费") + "（已钉住）"; });
+  };
+  if ($("amBatchOffPeakApply")) $("amBatchOffPeakApply").onclick = function () {
+    var ids = amPickedIds();
+    if (!ids.length) { amSay("先勾选模型（可用表头复选框全选）", "bad"); return; }
+    var v = $("amBatchOffPeak") ? $("amBatchOffPeak").value.trim() : "";
+    amBatchPost({ ids: ids, offPeakRate: v }, function (j) { return "已批量设置 " + j.updated + " 个模型的闲时倍率为 " + (j.offPeakRate === null ? "跟随全局" : j.offPeakRate); });
+  };
+  if ($("amBatchOffPeakClear")) $("amBatchOffPeakClear").onclick = function () {
+    var ids = amPickedIds();
+    if (!ids.length) { amSay("先勾选模型（可用表头复选框全选）", "bad"); return; }
+    amBatchPost({ ids: ids, offPeakRate: null }, function (j) { return "已把 " + j.updated + " 个模型的闲时倍率恢复为跟随全局"; });
+  };
+  if ($("amBatchDelete")) $("amBatchDelete").onclick = function () {
+    var ids = amPickedIds();
+    if (!ids.length) { amSay("先勾选模型", "bad"); return; }
+    if (!confirm("确认从目录删除选中的 " + ids.length + " 个模型？\n只移除本服务的目录（同时从「对用户开放」里剔除），不会动上游；重新同步目录后它们会回来。")) return;
+    amBatchPost({ ids: ids, delete: true, confirm: true }, function (j) { return "已删除 " + j.deleted + " 个模型（剩余 " + j.remaining + " 个）"; });
   };
   if ($("amBatchReset")) $("amBatchReset").onclick = function () {
     var ids = amPickedIds();
