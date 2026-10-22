@@ -2523,6 +2523,59 @@ const server = http.createServer(async (req, res) => {
             : "不可达：候选端点都不通 —— 看下面每一行的原因",
       });
     }
+    /* 管理员：**聊天测试**（10-22 用户：「加一个聊天测试功能」）。
+       ⛔ 只发一次非流式请求，用来现场验证「这个模型 id 到底通不通 / 上游到底回什么」；
+       ⛔ 先试 OpenAI 兼容 /chat/completions，404/405 再试 Anthropic /messages（同一把密钥换头）。 */
+    if (p === "/admin/upstream/chat" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const body = await readBody();
+      const model = String(body && body.model || "").trim();
+      const prompt = String(body && body.prompt || "").trim();
+      if (!model) return send(400, { ok: false, error: "先选一个模型 id" });
+      if (!prompt) return send(400, { ok: false, error: "先写一句测试内容" });
+      const key = currentGatewayKey();
+      const { openai } = splitUpstreamBase(currentCatalogBase());
+      const maxTokens = Math.min(Math.max(Number(body && body.maxTokens) || 256, 16), 1024);
+      const t0 = Date.now();
+      const tried = [];
+      /* ① OpenAI 兼容 */
+      try {
+        const res = await fetch(`${openai}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: maxTokens, stream: false }),
+          signal: AbortSignal.timeout(45000),
+        });
+        const text = await res.text().catch(() => "");
+        if (res.ok) {
+          let j = null; try { j = JSON.parse(text); } catch { /* 非 JSON 交给下面兜底 */ }
+          const content = j && j.choices && j.choices[0] && (j.choices[0].message && j.choices[0].message.content || j.choices[0].text);
+          if (content != null) {
+            return send(200, { ok: true, protocol: "openai", status: res.status, ms: Date.now() - t0, model: (j && j.model) || model, content: String(content).slice(0, 4000), usage: (j && j.usage) || null });
+          }
+          tried.push(`/chat/completions 200 但没解析出内容：${text.slice(0, 120)}`);
+        } else {
+          tried.push(`/chat/completions HTTP ${res.status}：${text.slice(0, 160)}`);
+        }
+      } catch (error) { tried.push(`/chat/completions ${classifyFetchError(error)}`); }
+      /* ② Anthropic Messages 回落 */
+      try {
+        const res = await fetch(`${openai}/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", ...(key ? { "x-api-key": key } : {}) },
+          body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
+          signal: AbortSignal.timeout(45000),
+        });
+        const text = await res.text().catch(() => "");
+        let j = null; try { j = JSON.parse(text); } catch { /* ignore */ }
+        const content = j && Array.isArray(j.content) ? j.content.map((c) => c && c.text).filter(Boolean).join("\n") : "";
+        if (res.ok && content) {
+          return send(200, { ok: true, protocol: "anthropic", status: res.status, ms: Date.now() - t0, model: (j && j.model) || model, content: content.slice(0, 4000), usage: (j && j.usage) || null });
+        }
+        tried.push(res.ok ? "/messages 200 但没解析出内容" : `/messages HTTP ${res.status}：${text.slice(0, 160)}`);
+      } catch (error) { tried.push(`/messages ${classifyFetchError(error)}`); }
+      return send(502, { ok: false, error: "chat-test-failed", message: sanitize(tried.join(" · ")) || "上游没有返回内容" });
+    }
     /* ── 知识库 / 记忆空间上游（10-18 用户令「为知识库和记忆空间预留可配置的接口」）────
        GET  回显：面板值 + **当前生效值** + 环境变量原值（管理员一眼看出"到底在用哪个"）
        POST 保存：字段留空 = **回退环境变量**（⛔ 不是清空）；保存后 applyServiceOverrides **热生效**

@@ -457,6 +457,18 @@
       </div>
       <!-- 连通性测试结果（10-18）：逐端点列出状态码/耗时/原因，管理员不必去翻服务器日志 -->
       <div id="auTestResult" style="display:none;margin-bottom:10px"></div>
+      <!-- 10-22 用户：「加一个聊天测试功能」——用保存的地址+密钥真发一条，验证模型 id 通不通。 -->
+      <div style="margin:12px 0 10px;padding-top:12px;border-top:1px solid var(--line-soft)">
+        <div style="font-weight:600;margin-bottom:6px">聊天测试 <span class="hint" style="font-weight:400">（走已保存的上游地址与密钥）</span></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="auChatModel" list="auChatModels" placeholder="模型 id（可从目录里选）" style="width:260px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text)" />
+          <datalist id="auChatModels"></datalist>
+          <button class="btn sm" id="auChatSend">发送测试</button>
+          <span class="hint" id="auChatStatus"></span>
+        </div>
+        <textarea id="auChatPrompt" rows="2" style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--text)">你好，用一句话介绍一下你自己</textarea>
+        <pre id="auChatOut" style="display:none;margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--field);white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto"></pre>
+      </div>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <span class="hint" id="auDiskInfo" style="flex:1">服务器磁盘余量读取中…</span>
         <button class="btn" id="auDiskRefresh" style="font-size:12px">刷新</button>
@@ -1553,6 +1565,7 @@
       $("auBase").value = r.j.base || "";
       if ($("auCatalogBase")) $("auCatalogBase").value = r.j.catalogBase || "";
       $("auKey").value = "";
+      try { loadChatModels(); } catch (e) {}
       $("auKey").placeholder = r.j.hasKey ? "已保存，留空则不修改" : "上游网关的 API Key";
       /* ⛔ 这段文字是管理员排查"到底在用哪个地址"的唯一入口 —— 必须把
          「来源 / 实际生效的目录地址 / 环境变量值 / http 明文警告」都摊开。 */
@@ -1667,6 +1680,36 @@
       }
       else { auSay("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
     }).catch(function () { $("auSave").disabled = false; auSay("网络错误", "bad"); });
+  };
+  /* 10-22：聊天测试 —— 模型下拉来自目录；发送一次非流式请求，直接看回复/错误。 */
+  function loadChatModels() {
+    if (!$("auChatModels")) return;
+    api("/admin/models").then(function (r) {
+      var list = (r.ok && r.j && r.j.list) || [];
+      $("auChatModels").innerHTML = list.map(function (m) { return '<option value="' + esc(m.id) + '"></option>'; }).join("");
+      if (!$("auChatModel").value && list.length) $("auChatModel").value = list[0].id;
+    }).catch(function () {});
+  }
+  if ($("auChatSend")) $("auChatSend").onclick = function () {
+    var model = ($("auChatModel").value || "").trim();
+    var prompt = ($("auChatPrompt").value || "").trim();
+    if (!model || !prompt) { $("auChatStatus").textContent = "先填模型 id 和测试内容"; return; }
+    var btn = $("auChatSend"); btn.disabled = true; btn.textContent = "发送中…";
+    $("auChatStatus").textContent = "请求上游中（最多 45 秒）…";
+    $("auChatOut").style.display = "none";
+    api("/admin/upstream/chat", { method: "POST", body: { model: model, prompt: prompt } }).then(function (r) {
+      btn.disabled = false; btn.textContent = "发送测试";
+      var j = r.j || {};
+      if (r.ok && j.ok) {
+        $("auChatStatus").textContent = "✓ " + (j.protocol === "anthropic" ? "Claude 协议" : "OpenAI 协议") + " · " + j.model + " · " + j.ms + "ms"
+          + (j.usage && j.usage.total_tokens ? " · " + j.usage.total_tokens + " tokens" : "");
+        $("auChatOut").style.display = "";
+        $("auChatOut").textContent = j.content || "（空回复）";
+      } else {
+        $("auChatStatus").textContent = "✗ " + (j.message || j.error || ("HTTP " + r.status));
+        $("auChatOut").style.display = "none";
+      }
+    }).catch(function () { btn.disabled = false; btn.textContent = "发送测试"; $("auChatStatus").textContent = "网络错误"; });
   };
   /* 连通性测试（10-18 用户令）：把「哪个端点通 / 状态码 / 耗时 / 原因」逐行摊开，
      ⛔ 不弹 alert（管理员要能对照着看），结果就地渲染在 #auTestResult。 */
