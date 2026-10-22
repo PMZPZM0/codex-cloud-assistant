@@ -461,11 +461,19 @@
       <div style="margin:12px 0 10px;padding-top:12px;border-top:1px solid var(--line-soft)">
         <div style="font-weight:600;margin-bottom:6px">聊天测试 <span class="hint" style="font-weight:400">（走已保存的上游地址与密钥）</span></div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <input id="auChatModel" list="auChatModels" placeholder="模型 id（可从目录里选）" style="width:260px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text)" />
+          <!-- 10-22 用户：「能选的模型太少了」——加一个**真下拉**，候选直接问上游要全量 id
+               （不再只吃「模型管理」里那份可能被清空/排除的目录）。选完自动回填右边的输入框。 -->
+          <select id="auChatPick" title="上游实时返回的全部模型"
+                  style="max-width:280px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text)">
+            <option value="">（手填 / 自定义）</option>
+          </select>
+          <input id="auChatModel" list="auChatModels" placeholder="模型 id（可从左边选，也可手填）" style="width:240px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text)" />
           <datalist id="auChatModels"></datalist>
+          <button class="btn sm" id="auChatRefresh" title="重新向上游要一次模型列表">刷新列表</button>
           <button class="btn sm" id="auChatSend">发送测试</button>
           <span class="hint" id="auChatStatus"></span>
         </div>
+        <div class="hint" id="auChatCount" style="margin-top:4px"></div>
         <textarea id="auChatPrompt" rows="2" style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--text)">你好，用一句话介绍一下你自己</textarea>
         <pre id="auChatOut" style="display:none;margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--field);white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto"></pre>
       </div>
@@ -1681,19 +1689,46 @@
         }
         loadUpstreamCfg(); loadDiskInfo();
         try { loadAdminModels(); } catch (e) {}
+        /* 换了上游 ⇒ 聊天测试的可选模型也要跟着换（否则下拉还是旧上游那批）。 */
+        try { loadChatModels(true); } catch (e) {}
       }
       else { auSay("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
     }).catch(function () { $("auSave").disabled = false; auSay("网络错误", "bad"); });
   };
-  /* 10-22：聊天测试 —— 模型下拉来自目录；发送一次非流式请求，直接看回复/错误。 */
-  function loadChatModels() {
-    if (!$("auChatModels")) return;
-    api("/admin/models").then(function (r) {
-      var list = (r.ok && r.j && r.j.list) || [];
-      $("auChatModels").innerHTML = list.map(function (m) { return '<option value="' + esc(m.id) + '"></option>'; }).join("");
-      if (!$("auChatModel").value && list.length) $("auChatModel").value = list[0].id;
-    }).catch(function () {});
+  /* 10-22：聊天测试 —— 候选来自 `/admin/upstream/models`（**上游实时全量** ∪ 目录），
+     不再只吃「模型管理」那份目录（清空过 / 被排除表过滤 / 没同步过就几乎没有可选项）。
+     下拉选中即回填输入框，也能直接手填上游没列出来的 id。 */
+  function loadChatModels(force) {
+    if (!$("auChatPick")) return;
+    var hint = $("auChatCount");
+    if (hint) hint.textContent = "正在向上游要模型列表…";
+    api("/admin/upstream/models" + (force ? "?t=" + Date.now() : "")).then(function (r) {
+      var j = r.j || {};
+      var ids = j.ids || [];
+      var cur = ($("auChatModel").value || "").trim();
+      $("auChatPick").innerHTML = '<option value="">（手填 / 自定义）</option>'
+        + ids.map(function (id) { return '<option value="' + esc(id) + '">' + esc(id) + "</option>"; }).join("");
+      $("auChatModels").innerHTML = ids.map(function (id) { return '<option value="' + esc(id) + '"></option>'; }).join("");
+      if (cur && ids.indexOf(cur) >= 0) $("auChatPick").value = cur;
+      else if (!cur && ids.length) { $("auChatModel").value = ids[0]; $("auChatPick").value = ids[0]; }
+      if (hint) {
+        hint.textContent = (j.ok ? "可选 " + ids.length + " 个模型" + (j.upstreamCount && ids.length > j.upstreamCount ? "（上游 " + j.upstreamCount + " + 目录 " + (ids.length - j.upstreamCount) + "）" : "") + " · " : "")
+          + (j.message || "上游没给出列表 —— 可直接手填模型 id");
+        /* 上游只回 1 个（常见于「开了模型映射、只暴露别名」）时说明白，免得以为这是全部模型。 */
+        if (j.ok && j.upstreamCount <= 1) hint.textContent += "。上游只列出这些时，其它模型 id 可直接手填测试";
+        hint.style.color = j.ok ? "" : "var(--warn)";
+      }
+    }).catch(function () { if (hint) hint.textContent = "读取模型列表失败 —— 可直接手填模型 id"; });
   }
+  if ($("auChatPick")) $("auChatPick").onchange = function () {
+    if (this.value) $("auChatModel").value = this.value;
+  };
+  if ($("auChatRefresh")) $("auChatRefresh").onclick = function () {
+    var b = this; b.disabled = true; b.textContent = "拉取中…";
+    loadChatModels(true);
+    setTimeout(function () { b.disabled = false; b.textContent = "刷新列表"; }, 1200);
+  };
+  loadChatModels();
   if ($("auChatSend")) $("auChatSend").onclick = function () {
     var model = ($("auChatModel").value || "").trim();
     var prompt = ($("auChatPrompt").value || "").trim();
@@ -1772,10 +1807,11 @@
             var sy = rr.j.sync || {};
             auSay(sy.ok ? ("已保存并同步：" + (sy.count || 0) + " 个模型") : ("已保存，但目录仍未识别：" + (sy.message || sy.error || "")), sy.ok ? "ok" : "bad");
             loadUpstreamCfg(); loadAdminModels();
+            try { loadChatModels(true); } catch (e) {}
           } else { auSay("保存失败：" + ((rr.j && rr.j.error) || rr.status), "bad"); }
         }).catch(function () { $("auAdopt").disabled = false; auSay("网络错误", "bad"); });
       };
-      if (j.recognized && !needSave) { try { loadAdminModels(); } catch (e) {} }
+      if (j.recognized && !needSave) { try { loadAdminModels(); } catch (e) {} try { loadChatModels(true); } catch (e) {} }
       auSay(needSave ? ("已识别 " + j.modelCount + " 个模型 —— 点「保存并同步」后模型管理才会更新") : (j.recognized ? "已识别 " + j.modelCount + " 个模型（模型管理已同步）" : (j.ok ? "能连通，但这个地址读不到模型列表" : "不可达（看上方逐行原因）")), needSave ? "warn" : (j.recognized ? "ok" : (j.ok ? "warn" : "bad")));
     }).catch(function () {
       btn.disabled = false; btn.textContent = "测试连通性"; auSay("网络错误", "bad");
@@ -2239,7 +2275,7 @@
     $("amSync").disabled = true; amSay("正在同步目录…");
     api("/admin/models/sync", { method: "POST" }).then(function (x) {
       $("amSync").disabled = false;
-      if (x.ok && x.j && x.j.ok) { amSay("目录已同步，共 " + ((x.j.list || []).length || x.j.total || 0) + " 个模型", "ok"); loadAdminModels(); }
+      if (x.ok && x.j && x.j.ok) { amSay("目录已同步，共 " + ((x.j.list || []).length || x.j.total || 0) + " 个模型", "ok"); loadAdminModels(); try { loadChatModels(true); } catch (e) {} }
       else {
         /* 10-22：换了上游地址且新地址给不出列表 ⇒ 服务端已清空，这里如实说，不再写「已保留」。 */
         var cleared = Boolean(x.j && x.j.cleared);

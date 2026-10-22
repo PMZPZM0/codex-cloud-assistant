@@ -1396,6 +1396,44 @@ const server = http.createServer(async (req, res) => {
       return out;
     }
 
+    /* 按候选端点表取「模型行」（10-22 抽出）：
+       先按**根**拉管理目录，再按 `/v1` 拉 OpenAI 列表，最后用 Anthropic 头再取一次按 id 合并。
+       ⛔ 不落盘、不过滤 —— 「同步目录」与「聊天测试的模型候选」共用同一份取数，避免两处漂移。
+       返回 { rows, source, payload, tried }；rows 为 null ⇒ 一个都没拿到（tried 是逐条原因）。 */
+    async function collectCatalogRows(base, authKey) {
+      const headers = authKey ? { Authorization: `Bearer ${authKey}` } : {};
+      const tried = [];
+      let rows = null;
+      let source = "catalog";
+      let payload = null;
+      for (const candidate of catalogCandidates(base)) {
+        try {
+          const res = await fetch(candidate.url, { headers });
+          if (!res.ok) { tried.push(`${candidate.name} HTTP ${res.status}`); continue; }
+          const body = await res.json().catch(() => null);
+          const got = modelsFromPayload(body);
+          if (got && got.length) { payload = body; rows = got; source = /v1\/models|\/models$/i.test(candidate.url) ? "openai" : "catalog"; break; }
+          tried.push(`${candidate.name} 返回的不是模型列表${got ? "（空列表）" : ""}`);
+        } catch (error) {
+          tried.push(`${candidate.name} ${classifyFetchError(error)}`);
+        }
+      }
+      if (rows && source === "openai") {
+        try {
+          const { openai } = splitUpstreamBase(base);
+          const claudeRows = await fetchModelsByProtocol(`${openai}/models`, authKey, "anthropic");
+          if (claudeRows && claudeRows.length) {
+            const have = new Set(rows.map((m) => String((m && m.id) || "").trim()));
+            for (const m of claudeRows) {
+              const id = String((m && m.id) || "").trim();
+              if (id && !have.has(id)) { rows.push(m); have.add(id); }
+            }
+          }
+        } catch { /* 不支持 Anthropic 头就跳过 */ }
+      }
+      return { rows, source, payload, tried };
+    }
+
     /* ── 模型目录同步（WBM → 本服务）────────────────────────────────────────────
        拉 WBM /api/model-catalog，归一化成客户端要的字段；credits（积分倍率）原样保留 ——
        ⛔ 倍率是"消耗速度随模型而定"的**唯一真相源**，本服务只转发不重写。 */
@@ -1415,7 +1453,6 @@ const server = http.createServer(async (req, res) => {
            ⛔ 两源统一映射成同一份 list；OpenAI 源**没有倍率** ⇒ 打 `creditsMissing` 标记，
               由面板提示「未设倍率（当前免费）」。⛔ 绝不猜一个默认倍率 —— 猜错就是多扣钱。 */
         const authKey = WBM_TOKEN || currentGatewayKey();
-        const headers = authKey ? { Authorization: `Bearer ${authKey}` } : {};
         /* ⛔ 10-22 修三个实测坑（用户贴图：填 `https://cn.pptoken.cc` 明明 /v1/models 有 12 个模型，
            面板仍报「同步失败：wbm-unreachable」）：
            ① 地址里带 `/v1` 时，旧代码拼成 `/v1/api/model-catalog`、`/v1/v1/models` ⇒ 打到 catch-all
@@ -1427,22 +1464,7 @@ const server = http.createServer(async (req, res) => {
         /* ⛔ 10-22 用户：「适配性强，不要写死，只要地址和密钥填了就要识别出来」。
            候选表与「测试连通性」共用（catalogCandidates），按顺序试、谁先给出列表用谁：
            地址带不带 /v1 都覆盖；以后加新协议只改那张表，这里不动。 */
-        const tried = [];
-        let data = null;
-        let rows = null;
-        let source = "catalog";
-        for (const candidate of catalogCandidates(catalogBase)) {
-          try {
-            const res = await fetch(candidate.url, { headers });
-            if (!res.ok) { tried.push(`${candidate.name} HTTP ${res.status}`); continue; }
-            const payload = await res.json().catch(() => null);
-            const got = modelsFromPayload(payload);
-            if (got && got.length) { data = payload; rows = got; source = /v1\/models|\/models$/i.test(candidate.url) ? "openai" : "catalog"; break; }
-            tried.push(`${candidate.name} 返回的不是模型列表${got ? "（空列表）" : ""}`);
-          } catch (error) {
-            tried.push(`${candidate.name} ${classifyFetchError(error)}`);
-          }
-        }
+        const { rows, source, payload: data, tried } = await collectCatalogRows(catalogBase, authKey);
         if (!rows) {
           /* ★ 10-22 用户：「直接清空，不要留着」——**换了上游地址**且新地址给不出列表时，
              旧目录已经不代表任何东西（还挂着旧倍率）⇒ 直接清掉，不留在界面上误导。
@@ -1454,20 +1476,6 @@ const server = http.createServer(async (req, res) => {
           }
           lastCatalogError = { error: "catalog-unreachable", base: catalogBase, message: sanitize(`上游 ${catalogBase} 没给出模型列表：${tried.join(" · ")}`) };
           return { ok: false, cleared: changedBase, ...lastCatalogError };
-        }
-        /* Claude 协议合并：同一个 /v1/models 换 Anthropic 头再取一次，按 id 去重并入（网关常按头切分组）。 */
-        if (source === "openai") {
-          try {
-            const { openai } = splitUpstreamBase(catalogBase);
-            const claudeRows = await fetchModelsByProtocol(`${openai}/models`, authKey, "anthropic");
-            if (claudeRows && claudeRows.length) {
-              const have = new Set(rows.map((m) => String((m && m.id) || "").trim()));
-              for (const m of claudeRows) {
-                const id = String((m && m.id) || "").trim();
-                if (id && !have.has(id)) { rows.push(m); have.add(id); }
-              }
-            }
-          } catch { /* 不支持 Anthropic 头就跳过 */ }
         }
         /* 上游倍率（逐模型 pricing / 账号级 billing），拿不到就留空。 */
         const rates = await readUpstreamRates(catalogBase, authKey).catch(() => ({ perModel: new Map(), global: null, source: "" }));
@@ -2558,6 +2566,48 @@ const server = http.createServer(async (req, res) => {
               : "能连通，但读不到模型列表：返回内容不是模型数组。确认这个地址是不是 API 根（多数网关是 /v1/models）。")
             
             : "不可达：候选端点都不通 —— 看下面每一行的原因",
+      });
+    }
+    /* 管理员：**聊天测试的可选模型**（10-22 用户：「这个聊天测试，能选的模型太少了」）。
+       原来下拉只吃 `/admin/models` 的目录（会被排除表/清空/手动删除影响，且目录没同步就没了）
+       ⇒ 这里**直接问上游要全量 id**（不落盘、不过滤、不去重合并目录），再并上目录里的 id。
+       ⛔ 只读：不改目录、不改倍率；拉不到就回 `ids` = 目录那份 + 逐条原因，面板照常手填。 */
+    if (p === "/admin/upstream/models" && req.method === "GET") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const base = currentCatalogBase();
+      const catalogIds = (db.modelCatalog.list || []).map((m) => String((m && m.id) || "").trim()).filter(Boolean);
+      if (!base) return send(200, { ok: false, ids: catalogIds, fromCatalog: catalogIds.length, error: "catalog-not-configured", message: "还没配置上游地址" });
+      const authKey = WBM_TOKEN || currentGatewayKey();
+      let fetched = { rows: null, source: "", tried: [] };
+      try {
+        /* ⛔ 面板打开就问上游一次：上游若半死（TCP 连着不回包）会把这个接口挂住 ⇒ 12 秒上限，
+           超时按「没给出列表」处理，面板照常手填，不等它。 */
+        fetched = await Promise.race([
+          collectCatalogRows(base, authKey),
+          new Promise((resolve) => setTimeout(() => resolve({ rows: null, source: "", tried: ["上游 12 秒内没响应（超时）"] }), 12_000)),
+        ]);
+      } catch (error) {
+        fetched = { rows: null, source: "", tried: [classifyFetchError(error)] };
+      }
+      /* 上游 id 优先（保持上游顺序），再补目录里有、上游没回的（例如别名的旧记录）。 */
+      const ids = [];
+      const seen = new Set();
+      for (const row of fetched.rows || []) {
+        const id = String((row && row.id) || "").trim();
+        if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
+      }
+      const upstreamCount = ids.length;
+      for (const id of catalogIds) if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
+      return send(200, {
+        ok: Boolean(upstreamCount),
+        ids,
+        upstreamCount,
+        fromCatalog: catalogIds.length,
+        source: fetched.source || "",
+        base,
+        message: upstreamCount
+          ? `上游实时返回 ${upstreamCount} 个模型${ids.length > upstreamCount ? `（并上目录共 ${ids.length} 个）` : ""}`
+          : `上游没给出模型列表：${(fetched.tried || []).join(" · ") || "未知原因"}`,
       });
     }
     /* 管理员：**聊天测试**（10-22 用户：「加一个聊天测试功能」）。
