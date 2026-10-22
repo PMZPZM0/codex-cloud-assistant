@@ -412,6 +412,60 @@ function catalogCandidates(base) {
   }
   return list;
 }
+/** 按**协议**取模型列表（10-22 用户：「openai 跟 Claude 协议都识别不出来吗」）。
+ *  ⛔ 同一个 `/v1/models`：OpenAI 用 `Authorization: Bearer`，Claude 用 `x-api-key + anthropic-version`，
+ *     两种头返回的模型集合**不一定相同**（很多网关按头切分组）⇒ 两种都要试、按 id 合并去重。 */
+async function fetchModelsByProtocol(url, key, mode) {
+  const headers = !key
+    ? {}
+    : mode === "anthropic"
+      ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
+      : { Authorization: `Bearer ${key}` };
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) return null;
+  const payload = await res.json().catch(() => null);
+  return modelsFromPayload(payload);
+}
+/** 读上游**倍率**（10-22 用户：「WBM 要能识别上游倍率，sub2api 也要」）。
+ *  两套常见协议，按顺序试，谁给就用谁：
+ *    · New API / one-api：`GET /api/pricing` → `{data:[{model_name, model_ratio, quota_type}]}`（**逐模型**）
+ *    · sub2api：`GET /v1/sub2api/billing` → `{effective_rate_multiplier | resolved_rate_multiplier | group_rate_multiplier}`（**账号级**）
+ *  ⛔ 逐模型优先于账号级：账号级只在该模型没有单独倍率时兜底；两者都没有就保持空（面板显示"未设倍率/当前免费"），
+ *     绝不猜一个默认值（猜错就是多扣钱）。 */
+async function readUpstreamRates(base, key) {
+  const { root, openai } = splitUpstreamBase(base);
+  const headers = key ? { Authorization: `Bearer ${key}` } : {};
+  const perModel = new Map();
+  let global = null;
+  let source = "";
+  try {
+    const res = await fetch(`${root}/api/pricing`, { headers, signal: AbortSignal.timeout(6000) });
+    if (res.ok) {
+      const j = await res.json().catch(() => null);
+      const rows = Array.isArray(j) ? j : Array.isArray(j && j.data) ? j.data : [];
+      for (const m of rows) {
+        const id = String((m && (m.model_name || m.model || m.id)) || "").trim();
+        const ratio = m && (m.model_ratio ?? m.ratio);
+        const payPerToken = m == null || m.quota_type == null || Number(m.quota_type) === 0;
+        if (id && ratio != null && Number.isFinite(Number(ratio)) && Number(ratio) > 0 && payPerToken) {
+          perModel.set(id, String(ratio));
+        }
+      }
+      if (perModel.size) source = "newapi-pricing";
+    }
+  } catch { /* 没有 /api/pricing 是常态 */ }
+  if (!perModel.size) {
+    try {
+      const res = await fetch(`${openai}/sub2api/billing`, { headers, signal: AbortSignal.timeout(6000) });
+      if (res.ok) {
+        const j = await res.json().catch(() => null);
+        const v = j && (j.effective_rate_multiplier ?? j.resolved_rate_multiplier ?? j.group_rate_multiplier);
+        if (v != null && Number.isFinite(Number(v)) && Number(v) > 0) { global = String(v); source = "sub2api-billing"; }
+      }
+    } catch { /* 非 sub2api 网关 */ }
+  }
+  return { perModel, global, source };
+}
 /** 从上游各种「模型列表」形状里取数组（实测存在四种以上，只认 `data` 会把 WBM 漏掉）：
  *  顶层数组 / `{data:[]}` / `{models:[]}` / `{list:[]}` / `{items:[]}` / `{result:[]}` /
  *  `{result:{data:[]}}` / `{data:{models:[]}}`。取不到就返回 null（由调用方给原因）。 */
@@ -450,7 +504,11 @@ function explainProbeStatus(status) {
 async function probeGet(base, probe, key, authHeader) {
   const t0 = Date.now();
   const headers = key
-    ? (authHeader === "x-api-key" ? { "X-API-Key": key } : { Authorization: `Bearer ${key}` })
+    ? (authHeader === "x-api-key"
+      ? { "X-API-Key": key }
+      : probe.authMode === "anthropic"
+        ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
+        : { Authorization: `Bearer ${key}` })
     : {};
   try {
     /* ⛔ probe.url：目录类探测直接给**整条 URL**（不同端点挂在不同基址上，
@@ -1386,24 +1444,43 @@ const server = http.createServer(async (req, res) => {
           lastCatalogError = { error: "catalog-unreachable", base: catalogBase, message: sanitize(`上游 ${catalogBase} 没给出模型列表：${tried.join(" · ")}`) };
           return { ok: false, ...lastCatalogError };
         }
+        /* Claude 协议合并：同一个 /v1/models 换 Anthropic 头再取一次，按 id 去重并入（网关常按头切分组）。 */
+        if (source === "openai") {
+          try {
+            const { openai } = splitUpstreamBase(catalogBase);
+            const claudeRows = await fetchModelsByProtocol(`${openai}/models`, authKey, "anthropic");
+            if (claudeRows && claudeRows.length) {
+              const have = new Set(rows.map((m) => String((m && m.id) || "").trim()));
+              for (const m of claudeRows) {
+                const id = String((m && m.id) || "").trim();
+                if (id && !have.has(id)) { rows.push(m); have.add(id); }
+              }
+            }
+          } catch { /* 不支持 Anthropic 头就跳过 */ }
+        }
+        /* 上游倍率（逐模型 pricing / 账号级 billing），拿不到就留空。 */
+        const rates = await readUpstreamRates(catalogBase, authKey).catch(() => ({ perModel: new Map(), global: null, source: "" }));
+        const rateFor = (id) => rates.perModel.get(id) || rates.global || "";
         const list = rows.map((m) => {
           /* OpenAI 形状只有 id / object / created / owned_by：其余字段留空并标「缺倍率」 */
           if (source === "openai") {
             const oaId = String(m.id || "").trim();
+            const oaRate = String((m && (m.credits ?? m.credit ?? m.rate ?? m.ratio)) || "").trim() || rateFor(oaId);
             return {
               id: oaId, name: oaId,
-              description: "OpenAI 兼容目录（上游未提供倍率与规格）",
-              credits: "", tags: [], series: "",
+              description: oaRate ? "OpenAI / Claude 兼容目录（倍率取自上游 pricing / billing）" : "OpenAI 兼容目录（上游未提供倍率与规格）",
+              credits: oaRate, tags: [], series: "",
               contextLength: null, maxOutputTokens: null,
               supportsImages: false, supportsReasoning: false,
-              creditsMissing: true,
+              creditsMissing: !oaRate,
             };
           }
           return {
             id: String(m.id || "").trim(),
             name: String(m.name || m.id || "").trim(),
             description: String(m.description || "").slice(0, 200),
-            credits: String(m.credits || "").trim(),
+            /* WBM 目录自带倍率；个别网关叫 credit / rate / ratio，统一兜住，最后再落上游 pricing/billing。 */
+            credits: String(m.credits ?? m.credit ?? m.rate ?? m.ratio ?? "").trim() || rateFor(String(m.id || "").trim()),
             tags: Array.isArray(m.tags) ? m.tags.slice(0, 6).map(String) : [],
             series: String(m.series || ""),
             contextLength: Number(m.context_length || 0) || null,
@@ -1451,6 +1528,7 @@ const server = http.createServer(async (req, res) => {
           /* ⛔ 记下目录来源：面板据此提示「上游没给倍率，需手动填」（openai 源一定缺倍率） */
           source: source === "openai" ? "openai-compat" : String((data && (data.source_label || data.source)) || "catalog"),
           catalogSource: source,
+          rateSource: rates.source || "",
           list,
           ...(prevAvail ? { available: prevAvail.filter((x) => ids.has(x)) } : {}),
         };
@@ -1855,6 +1933,7 @@ const server = http.createServer(async (req, res) => {
         /* ⛔ 必须是 currentCatalogBase()（本作用域没有 catalogBase —— 那是 pullModelCatalog 的局部量）；
            面板据此显示「到底在从哪个地址拉目录」，不然报错只说「没给出列表」，排查无从下手。 */
         catalogBase: currentCatalogBase(),
+        rateSource: db.modelCatalog.rateSource || "",
         users,
       });
     }
@@ -2329,6 +2408,12 @@ const server = http.createServer(async (req, res) => {
             这个地址能识别模型，其余未提供的不算错误（旧版把 404 画成红叉，用户以为坏了）。
          ⛔ 只有**一条都不通**时，才逐条给原因。 */
       const probes = catalogCandidates(norm.base).map((c) => ({ name: c.name, url: c.url, wantList: true, optional: true }));
+      /* 10-22 用户：「openai 跟 Claude 协议都识别不出来吗」——同一个 /v1/models 换 Anthropic 头
+         （x-api-key + anthropic-version）常能多列出一批 Claude 模型，这里单独作为一条候选。 */
+      if (key) {
+        const { openai } = splitUpstreamBase(norm.base);
+        probes.push({ name: "Claude 协议 /v1/models", url: `${openai}/models`, authMode: "anthropic", wantList: true, optional: true });
+      }
       const results = [];
       for (const probe of probes) results.push(await probeGet(norm.base, probe, key, "bearer"));
       /* ⛔ 10-22「上面识别出来了，下面自动更新啊」——用户把绿色 ✓ 当成"识别成功"，

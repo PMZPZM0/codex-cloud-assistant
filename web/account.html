@@ -1914,7 +1914,9 @@
       amData = r.j;
       /* 10-22：显示「目录来源 + 实际上游地址 + 上次同步时间」，同步失败时一眼看出拉的是哪个地址。 */
       if ($("amSource")) {
-        $("amSource").textContent = "目录来源：" + (r.j.source || "未同步") + " · 上游：" + (r.j.catalogBase || "未配置")
+        $("amSource").textContent = "目录来源：" + (r.j.source || "未同步")
+          + (r.j.rateSource ? " · 倍率来源：" + r.j.rateSource : "")
+          + " · 上游：" + (r.j.catalogBase || "未配置")
           + (r.j.syncedAt ? " · 上次同步 " + new Date(r.j.syncedAt).toLocaleString() : "");
       }
       /* 10-22：目录空且最近一次同步失败 ⇒ 直接把原因说出来（原来只显示空表，管理员以为「没模型」）。 */

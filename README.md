@@ -183,6 +183,22 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' https://你的域名/v1
 候选端点表（管理目录 → `/v1/models` → `/models` → `/claude-code/default/v1/models`）
 会依次尝试，**填了 API 地址 + 密钥就能自动识别**，不需要手工指定路径。
 
+### 5.2 倍率（积分倍率）从哪来
+
+同步目录时会顺带读上游倍率，**逐模型优先、账号级兜底**，都读不到就留空（面板显示「未设倍率 / 当前免费」）：
+
+| 上游类型 | 端点 | 字段 | 粒度 |
+|---|---|---|---|
+| WBM / 内置供应商 | `/api/model-catalog` | `credits`（兼容 `credit/rate/ratio`） | 逐模型 |
+| New API / one-api | `GET /api/pricing` | `model_ratio`（`quota_type=0` 才取） | 逐模型 |
+| **sub2api** | `GET /v1/sub2api/billing` | `effective_rate_multiplier` → `resolved` → `group` | 账号级（兜底） |
+| OpenAI 兼容 | `/v1/models` | 无倍率字段 | — |
+
+⛔ 绝不猜默认倍率（猜错就是多扣钱）。模型管理页顶部会显示「倍率来源」，一眼看出这次是 pricing 还是 billing。
+
+**Claude 协议**：同一个 `/v1/models` 换 `x-api-key + anthropic-version` 头再取一次，按 id 合并去重 ——
+很多网关按请求头切分组，只用 Bearer 会漏掉 Claude 模型。
+
 ## 6. 更新
 
 ```bash
