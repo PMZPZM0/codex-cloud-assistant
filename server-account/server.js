@@ -387,6 +387,23 @@ function splitUpstreamBase(base) {
   const b = String(base || "").trim().replace(/\/+$/, "");
   return { root: b.replace(/\/v1$/i, ""), openai: /\/v1$/i.test(b) ? b : `${b}/v1` };
 }
+/** 模型目录的**候选端点表**（10-22 用户：「适配性强，不要写死，只要 API 地址和密钥填了，
+ *  模型目录就要更新并且识别出来」）。
+ *
+ *  探测与同步**共用这一张表**，按顺序试，谁先给出列表就用谁：
+ *    ① 管理目录 `/api/model-catalog`（挂在**根**上，自带倍率）
+ *    ② OpenAI 兼容 `/v1/models`（绝大多数中转/网关都有）
+ *    ③ 通用 `/models`（少数网关把列表挂在根上）
+ *  ⛔ 以后接新协议（Gemini /v1beta/models、Ollama /api/tags …）只往这里加一行，
+ *     探测与同步自动跟着走 —— 这就是「不写死」的落点。 */
+function catalogCandidates(base) {
+  const { root, openai } = splitUpstreamBase(base);
+  return [
+    { name: "管理目录 /api/model-catalog", url: `${root}/api/model-catalog?realm=cn` },
+    { name: "OpenAI 兼容 /v1/models", url: `${openai}/models` },
+    { name: "通用 /models", url: `${root}/models` },
+  ];
+}
 /** 从上游各种「模型列表」形状里取数组（实测存在四种以上，只认 `data` 会把 WBM 漏掉）：
  *  顶层数组 / `{data:[]}` / `{models:[]}` / `{list:[]}` / `{items:[]}` / `{result:[]}` /
  *  `{result:{data:[]}}` / `{data:{models:[]}}`。取不到就返回 null（由调用方给原因）。 */
@@ -428,9 +445,9 @@ async function probeGet(base, probe, key, authHeader) {
     ? (authHeader === "x-api-key" ? { "X-API-Key": key } : { Authorization: `Bearer ${key}` })
     : {};
   try {
-    /* ⛔ probe.base：同一组探测里可能有两个不同的基址（目录在根、/models 在 /v1）——
-       10-22 之前全部用同一个 base 拼，填了 /v1 的地址必然两个都拼错。 */
-    const target = String(probe.base || base).replace(/\/+$/, "") + probe.path;
+    /* ⛔ probe.url：目录类探测直接给**整条 URL**（不同端点挂在不同基址上，
+       拿 base+path 拼容易拼错）；其余探测仍走 base+path。 */
+    const target = probe.url || (String(probe.base || base).replace(/\/+$/, "") + probe.path);
     const r = await fetch(target, { headers, signal: AbortSignal.timeout(8000) });
     const text = await r.text().catch(() => "");
     let count = null;
@@ -1331,35 +1348,23 @@ const server = http.createServer(async (req, res) => {
            ③ 只认 `data` / `models` 两种形状。
            现在：先按**根**拉管理目录，失败（含解析失败、抛异常）再按 `/v1` 拉 OpenAI 列表；
            形状统一交给 modelsFromPayload；两条都拿不到才报错，并把每条的原因带回面板。 */
-        const { root, openai } = splitUpstreamBase(catalogBase);
+        /* ⛔ 10-22 用户：「适配性强，不要写死，只要地址和密钥填了就要识别出来」。
+           候选表与「测试连通性」共用（catalogCandidates），按顺序试、谁先给出列表用谁：
+           地址带不带 /v1 都覆盖；以后加新协议只改那张表，这里不动。 */
         const tried = [];
         let data = null;
         let rows = null;
         let source = "catalog";
-        try {
-          const res = await fetch(`${root}/api/model-catalog?realm=cn`, { headers });
-          if (!res.ok) tried.push(`/api/model-catalog HTTP ${res.status}`);
-          else {
+        for (const candidate of catalogCandidates(catalogBase)) {
+          try {
+            const res = await fetch(candidate.url, { headers });
+            if (!res.ok) { tried.push(`${candidate.name} HTTP ${res.status}`); continue; }
             const payload = await res.json().catch(() => null);
             const got = modelsFromPayload(payload);
-            if (got) { data = payload; rows = got; source = "catalog"; }
-            else tried.push("/api/model-catalog 返回的不是模型列表");
-          }
-        } catch (error) {
-          tried.push(`/api/model-catalog ${classifyFetchError(error)}`);
-        }
-        if (!rows) {
-          try {
-            const res = await fetch(`${openai}/models`, { headers });
-            if (!res.ok) tried.push(`/v1/models HTTP ${res.status}`);
-            else {
-              const payload = await res.json().catch(() => null);
-              const got = modelsFromPayload(payload);
-              if (got) { data = payload; rows = got; source = "openai"; }
-              else tried.push("/v1/models 返回的不是模型列表");
-            }
+            if (got) { data = payload; rows = got; source = /v1\/models|\/models$/i.test(candidate.url) ? "openai" : "catalog"; break; }
+            tried.push(`${candidate.name} 返回的不是模型列表`);
           } catch (error) {
-            tried.push(`/v1/models ${classifyFetchError(error)}`);
+            tried.push(`${candidate.name} ${classifyFetchError(error)}`);
           }
         }
         if (!rows) {
@@ -2274,11 +2279,21 @@ const server = http.createServer(async (req, res) => {
       db.upstream = { base: norm.base, catalogBase, gatewayKey: providedKey || prev.gatewayKey || "" };
       persist();
       console.log(`[upstream] ${me.username} 更新上游 API 地址 → ${norm.base}${catalogBase ? `（目录同步 → ${catalogBase}）` : ""}${providedKey ? "（含新网关密钥）" : "（沿用原网关密钥）"}${norm.insecure ? " ⚠️ http 明文" : ""}`);
+      /* ★ 10-22 用户：「只要 API 地址和密钥填了，模型目录就要更新并且识别出来」——
+         保存后立刻按候选表拉一次目录（最多等 6 秒，慢上游不拖死保存按钮）；
+         结果随回执返回，面板直接显示「已识别 N 个模型」或具体原因。 */
+      const pulled = await Promise.race([
+        pullModelCatalog(true),
+        new Promise((resolve) => setTimeout(() => resolve(null), 6000)),
+      ]);
       return send(200, {
         ok: true, base: norm.base, catalogBase,
         hasKey: Boolean(db.upstream.gatewayKey),
         insecure: norm.insecure,
         warning: norm.insecure ? "http 明文传输：仅建议内网使用" : "",
+        sync: pulled
+          ? { ok: Boolean(pulled.ok), count: pulled.count || 0, error: pulled.error || "", message: pulled.message || "" }
+          : { ok: false, pending: true, message: "上游响应较慢，目录同步仍在后台进行（打开「模型管理」会自动补一次）" },
       });
     }
     /* 连通性测试（10-18 用户令「为上游 API 地址增加连通性测试功能」）。
@@ -2291,16 +2306,11 @@ const server = http.createServer(async (req, res) => {
       if (!norm.ok) return send(400, { ok: false, error: norm.error });
       const key = String(body && body.gatewayKey || "").trim() || currentGatewayKey();
       const started = Date.now();
-      /* 依次探测：管理目录（挂在**根**上）→ OpenAI 兼容 /models（挂在 /v1 下）。
-         ⛔ 10-22：地址带不带 `/v1` 都能测（splitUpstreamBase 给出两个基址，避免拼成
-            `/v1/api/...`、`/v1/v1/models` 打到 SPA catch-all 拿 200 HTML）；
-         ⛔ 普通网关没有 `/api/model-catalog` 是**正常**的 ⇒ 这一行标 optional，
-            另一行通了就显示「未提供（可选）」，不再打红叉吓人。 */
-      const { root, openai } = splitUpstreamBase(norm.base);
-      const probes = [
-        { name: "管理目录（/api/model-catalog）", path: "/api/model-catalog?realm=cn", base: root, wantList: true, optional: true },
-        { name: "OpenAI 兼容 /v1/models", path: "/models", base: openai, wantList: true },
-      ];
+      /* 依次探测**候选表**（catalogCandidates：管理目录 → OpenAI /v1/models → 通用 /models）。
+         ⛔ 全部标 optional：对普通网关来说「没有管理目录」是正常形态 —— 有一行通了就说明
+            这个地址能识别模型，其余未提供的不算错误（旧版把 404 画成红叉，用户以为坏了）。
+         ⛔ 只有**一条都不通**时，才逐条给原因。 */
+      const probes = catalogCandidates(norm.base).map((c) => ({ name: c.name, url: c.url, wantList: true, optional: true }));
       const results = [];
       for (const probe of probes) results.push(await probeGet(norm.base, probe, key, "bearer"));
       const best = bestProbe(results);
@@ -2312,10 +2322,13 @@ const server = http.createServer(async (req, res) => {
         warning: norm.insecure ? "http 明文传输：仅建议内网使用" : "",
         hasKey: Boolean(key),
         elapsedMs: Date.now() - started,
+        /* 只把「没连通时」需要的失败明细带全；连通时前端只渲染成功的那行 */
         probes: results,
+        modelCount: best && best.count != null ? best.count : null,
+        modelSource: best ? best.name : "",
         message: best
           ? `连通：${best.name}${best.count != null ? `，${best.count} 个模型` : ""}（${best.ms}ms）`
-          : "不可达：两个端点都没成功 —— 看下面每一行的原因",
+          : "不可达：候选端点都不通 —— 看下面每一行的原因",
       });
     }
     /* ── 知识库 / 记忆空间上游（10-18 用户令「为知识库和记忆空间预留可配置的接口」）────

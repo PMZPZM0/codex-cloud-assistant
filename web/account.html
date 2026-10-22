@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<!-- ⛔ 10-22：一键更新后页面经常还是旧的（nginx 静态托管，浏览器拿缓存）⇒ 明确要求不缓存。
+     症状是「服务端已经是新逻辑，界面还是旧布局/旧文案」，很容易被误判成修复没生效。 -->
+<meta http-equiv="Cache-Control" content="no-store" />
 <title>控制台 · Codex Assistant</title>
 <!-- ⛔ 自足页：只依赖本文件与 /cloud-api/*、本机 127.0.0.1（探测助手）—— 云端原样托管即可用。
      三个中心（用户 / 配对 / 云端）共用一套设计令牌与组件，手机端（<=760px）切为顶部标签 + 单列。 -->
@@ -1636,7 +1639,16 @@
     api("/admin/upstream", { method: "POST", body: { base: base, catalogBase: $("auCatalogBase") ? $("auCatalogBase").value.trim() : "", gatewayKey: $("auKey").value.trim() } }).then(function (r) {
       $("auSave").disabled = false;
       if (r.ok && r.j && r.j.ok) {
-        auSay("上游 API 已更新并热生效（下一条调用即走新地址）" + (r.j.warning ? " · " + r.j.warning : ""), "ok");
+        /* 10-22：「地址和密钥填了就要识别出模型」—— 保存后立刻把目录同步结果显示出来，
+           不用再手动点「重新同步」或去翻「模型管理」。 */
+        var sync = r.j.sync || null;
+        if (sync && sync.ok) {
+          auSay("已保存 ✓ 已识别 " + (sync.count || 0) + " 个模型（下一条调用即走新地址）" + (r.j.warning ? " · " + r.j.warning : ""), "ok");
+        } else if (sync) {
+          auSay("已保存，但目录没识别出模型：" + (sync.message || sync.error || "未知原因") + (r.j.warning ? " · " + r.j.warning : ""), "bad");
+        } else {
+          auSay("上游 API 已更新并热生效（下一条调用即走新地址）" + (r.j.warning ? " · " + r.j.warning : ""), "ok");
+        }
         loadUpstreamCfg(); loadDiskInfo();
       }
       else { auSay("保存失败：" + ((r.j && r.j.error) || r.status), "bad"); }
@@ -1660,7 +1672,9 @@
         auSay("测试失败", "bad");
         return;
       }
-      var rows = (j.probes || []).map(function (p) {
+      /* 10-22：连通时**只显示成功的那条**——未提供的候选端点（普通网关没有管理目录）不再列出来吓人；
+         只有一条都不通时才逐条摊原因。 */
+      var rows = (j.probes || []).filter(function (p) { return !j.ok || p.ok; }).map(function (p) {
         /* 10-22：可选项失败但整体通了 ⇒ 显示「未提供（可选）」，不打红叉（普通网关本来就没有目录端点）。 */
         var soft = p.optional && !p.ok && j.ok;
         var col = p.ok ? "var(--ok)" : (soft ? "var(--muted)" : "var(--bad)");
