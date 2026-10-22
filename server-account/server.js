@@ -1444,8 +1444,16 @@ const server = http.createServer(async (req, res) => {
           }
         }
         if (!rows) {
+          /* ★ 10-22 用户：「直接清空，不要留着」——**换了上游地址**且新地址给不出列表时，
+             旧目录已经不代表任何东西（还挂着旧倍率）⇒ 直接清掉，不留在界面上误导。
+             ⛔ 只有「目录来自的地址 ≠ 当前地址」才清；同一地址的偶发失败仍保留（不因一次网络抖动丢数据）。 */
+          const changedBase = Boolean(db.modelCatalog.base) && db.modelCatalog.base !== catalogBase;
+          if (changedBase) {
+            db.modelCatalog = { syncedAt: 0, list: [], available: [], base: "", rateSource: "", catalogSource: "" };
+            persist();
+          }
           lastCatalogError = { error: "catalog-unreachable", base: catalogBase, message: sanitize(`上游 ${catalogBase} 没给出模型列表：${tried.join(" · ")}`) };
-          return { ok: false, ...lastCatalogError };
+          return { ok: false, cleared: changedBase, ...lastCatalogError };
         }
         /* Claude 协议合并：同一个 /v1/models 换 Anthropic 头再取一次，按 id 去重并入（网关常按头切分组）。 */
         if (source === "openai") {
@@ -1910,6 +1918,19 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
+    /* 管理员：清空模型目录（用户 10-22：「直接清空，不要留着」+ 一个手动按钮）。
+       ⛔ 显式 confirm：清空会让用户端暂时看不到任何模型（目录为空时客户端回落为全部可见，故不会锁死）。
+       ⛔ 只清目录，不动 userModels（每个用户自己的勾选）与积分流水。 */
+    if (p === "/admin/models/clear" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const body = await readBody();
+      if (!body || body.confirm !== true) return send(400, { ok: false, error: "需要确认（confirm: true）" });
+      const before = Array.isArray(db.modelCatalog.list) ? db.modelCatalog.list.length : 0;
+      db.modelCatalog = { syncedAt: 0, list: [], available: [], base: "", rateSource: "", catalogSource: "" };
+      persist();
+      console.log(`[catalog] ${me.username} 清空模型目录（原有 ${before} 个）`);
+      return send(200, { ok: true, cleared: before });
+    }
     /* 管理员：立刻重新拉取模型目录（force 绕过缓存） */
     if (p === "/admin/models/sync" && req.method === "POST") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
@@ -1921,7 +1942,10 @@ const server = http.createServer(async (req, res) => {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       /* 10-22 用户问「模型目录不是自动新增吗」：原来只有客户端 /models 与手动按钮会拉目录，
          管理员打开本页看到的可能是几小时前的快照 ⇒ 这里按 TTL（默认 30 分钟）自动补一次。 */
-      const autoPulled = await pullModelCatalog(false).catch(() => null);
+      /* 10-22 用户：「自动刷新缓存」——面板带 ?refresh=1 时强制重拉（绕 30 分钟 TTL），
+         用来「打开页面就刷新 / 每两分钟自动刷一次」；不带参数仍走 TTL，避免客户端请求打爆上游。 */
+      const forceRefresh = /(?:^|&)refresh=1(?:&|$)/.test(String(req.url || "").split("?")[1] || "");
+      const autoPulled = await pullModelCatalog(forceRefresh).catch(() => null);
       const users = db.users.map((u) => ({
         username: u.username,
         role: u.role,

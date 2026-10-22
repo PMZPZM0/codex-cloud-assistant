@@ -639,6 +639,7 @@
         </span>
         <button class="btn sm" id="amExport">导出模型池</button>
         <button class="btn sm" id="amSync">重新同步目录</button>
+        <button class="btn sm" id="amClear" title="清空模型目录（用户端会暂时看不到模型，直到重新同步）">清空目录</button>
       </h2>
       <p class="hint">
         <b>倍率</b> = 调用该模型时按倍率扣积分（如 0.29 表示 1 积分额度按 0.29 计），<b>留空 = 免费</b>。
@@ -1910,8 +1911,9 @@
   /* ── 模型管理（管理员：倍率 + 每用户可用模型）── */
   var amData = null;
   function amSay(text, cls) { var st = $("amStatus"); st.textContent = text; st.className = "status" + (cls ? " " + cls : ""); }
-  function loadAdminModels() {
-    api("/admin/models").then(function (r) {
+  function loadAdminModels(force) {
+    /* force=true ⇒ 服务端强制重拉（绕缓存）；页面打开与定时刷新都用它。 */
+    api("/admin/models" + (force ? "?refresh=1" : "")).then(function (r) {
       if (!r.ok || !r.j || !r.j.ok) { amSay("模型目录读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
       amData = r.j;
       /* 10-22：显示「目录来源 + 实际上游地址 + 上次同步时间」，同步失败时一眼看出拉的是哪个地址。 */
@@ -2088,12 +2090,33 @@
       amSay("已导出 " + payload.models.length + " 个模型（含上游倍率与闲时倍率）", "ok");
     }).catch(function () { btn.disabled = false; amSay("导出失败：网络错误", "bad"); });
   };
+  /* 10-22 用户：「自动刷新缓存」——进页面先强制刷一次，之后每 2 分钟静默刷一次（仅页面可见时）。 */
+  setTimeout(function () { try { loadAdminModels(true); } catch (e) {} }, 0);
+  setInterval(function () {
+    if (document.visibilityState !== "visible") return;
+    if (!document.getElementById("amRows")) return;
+    try { loadAdminModels(true); } catch (e) {}
+  }, 120000);
+  if ($("amClear")) $("amClear").onclick = function () {
+    if (!confirm("确认清空模型目录？清空后用户端会暂时看不到模型，直到你重新同步或改回可用上游。\n（不动用户自己的勾选与积分流水）")) return;
+    $("amClear").disabled = true;
+    api("/admin/models/clear", { method: "POST", body: { confirm: true } }).then(function (r) {
+      $("amClear").disabled = false;
+      if (r.ok && r.j && r.j.ok) { amSay("已清空模型目录（原有 " + (r.j.cleared || 0) + " 个）", "ok"); loadAdminModels(); }
+      else amSay("清空失败：" + ((r.j && r.j.error) || r.status), "bad");
+    }).catch(function () { $("amClear").disabled = false; amSay("网络错误", "bad"); });
+  };
   if ($("amSync")) $("amSync").onclick = function () {
     $("amSync").disabled = true; amSay("正在同步目录…");
     api("/admin/models/sync", { method: "POST" }).then(function (x) {
       $("amSync").disabled = false;
       if (x.ok && x.j && x.j.ok) { amSay("目录已同步，共 " + ((x.j.list || []).length || x.j.total || 0) + " 个模型", "ok"); loadAdminModels(); }
-      else { amSay("同步失败：" + ((x.j && (x.j.message || x.j.error)) || ("HTTP " + x.status)) + "（已保留现有目录）", "bad"); loadAdminModels(); }
+      else {
+        /* 10-22：换了上游地址且新地址给不出列表 ⇒ 服务端已清空，这里如实说，不再写「已保留」。 */
+        var cleared = Boolean(x.j && x.j.cleared);
+        amSay("同步失败：" + ((x.j && (x.j.message || x.j.error)) || ("HTTP " + x.status)) + (cleared ? "（旧目录已清空）" : "（已保留现有目录）"), "bad");
+        loadAdminModels();
+      }
     }).catch(function () { $("amSync").disabled = false; amSay("网络错误", "bad"); });
   };
 
