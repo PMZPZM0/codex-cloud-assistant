@@ -2797,7 +2797,11 @@ const server = http.createServer(async (req, res) => {
       if (!prompt) return send(400, { ok: false, error: "先写一句测试内容" });
       const key = currentGatewayKey();
       const { openai } = splitUpstreamBase(currentCatalogBase());
-      const maxTokens = Math.min(Math.max(Number(body && body.maxTokens) || 256, 16), 1024);
+      /* ⛔ 10-22 用户截图「回复被截断」（我是腾讯开发的混…）：默认 256 太小 ——
+         推理型模型（hy4 / deepseek 等）会把预算烧在 reasoning 上，正文只剩几个字。
+         ⇒ 默认 1024、上限 4096；并把 finish_reason 带回去，让面板能明说「是被上限截断」。 */
+      const asked = Number(body && body.maxTokens);
+      const maxTokens = Math.min(Math.max(Number.isFinite(asked) && asked > 0 ? asked : 1024, 16), 4096);
       const t0 = Date.now();
       const tried = [];
       /* ① OpenAI 兼容 */
@@ -2811,9 +2815,24 @@ const server = http.createServer(async (req, res) => {
         const text = await res.text().catch(() => "");
         if (res.ok) {
           let j = null; try { j = JSON.parse(text); } catch { /* 非 JSON 交给下面兜底 */ }
-          const content = j && j.choices && j.choices[0] && (j.choices[0].message && j.choices[0].message.content || j.choices[0].text);
+          const choice = j && j.choices && j.choices[0];
+          const content = choice && (choice.message && choice.message.content || choice.text);
           if (content != null) {
-            return send(200, { ok: true, protocol: "openai", status: res.status, ms: Date.now() - t0, model: (j && j.model) || model, content: String(content).slice(0, 4000), usage: (j && j.usage) || null });
+            return send(200, {
+              ok: true, protocol: "openai", status: res.status, ms: Date.now() - t0,
+              model: (j && j.model) || model, content: String(content).slice(0, 8000), usage: (j && j.usage) || null,
+              maxTokens, finishReason: String((choice && choice.finish_reason) || ""),
+            });
+          }
+          /* 只有思考、没有正文（推理模型 max_tokens 被 reasoning 吃光）⇒ 明说，别报「没解析出内容」。 */
+          const reasoning = choice && choice.message && choice.message.reasoning_content;
+          if (reasoning) {
+            return send(200, {
+              ok: true, protocol: "openai", status: res.status, ms: Date.now() - t0,
+              model: (j && j.model) || model, content: "", reasoning: String(reasoning).slice(0, 2000),
+              usage: (j && j.usage) || null, maxTokens, finishReason: String((choice && choice.finish_reason) || "length"),
+              message: `只有思考、没有正文：这个模型把 ${maxTokens} 个 token 全用在推理上了 —— 把「回复上限」调大再试`,
+            });
           }
           tried.push(`/chat/completions 200 但没解析出内容：${text.slice(0, 120)}`);
         } else {
@@ -2832,7 +2851,11 @@ const server = http.createServer(async (req, res) => {
         let j = null; try { j = JSON.parse(text); } catch { /* ignore */ }
         const content = j && Array.isArray(j.content) ? j.content.map((c) => c && c.text).filter(Boolean).join("\n") : "";
         if (res.ok && content) {
-          return send(200, { ok: true, protocol: "anthropic", status: res.status, ms: Date.now() - t0, model: (j && j.model) || model, content: content.slice(0, 4000), usage: (j && j.usage) || null });
+          return send(200, {
+            ok: true, protocol: "anthropic", status: res.status, ms: Date.now() - t0,
+            model: (j && j.model) || model, content: content.slice(0, 8000), usage: (j && j.usage) || null,
+            maxTokens, finishReason: String((j && j.stop_reason) || ""),
+          });
         }
         tried.push(res.ok ? "/messages 200 但没解析出内容" : `/messages HTTP ${res.status}：${text.slice(0, 160)}`);
       } catch (error) { tried.push(`/messages ${classifyFetchError(error)}`); }
@@ -2843,6 +2866,10 @@ const server = http.createServer(async (req, res) => {
        POST 保存：字段留空 = **回退环境变量**（⛔ 不是清空）；保存后 applyServiceOverrides **热生效**
        POST .../test：只发 GET 的连通性探测（⛔ 绝不发写请求；⛔ 回执不含密钥）
        ⛔ 地址走 normalizeUpstreamBase（http / 裸主机 / 内网 / 端口 / 路径前缀都接受）。 */
+    /* 管理员：**聊天测试的可选模型**（10-22 用户：「这个聊天测试，能选的模型太少了」）。
+       原来下拉只吃 `/admin/models` 的目录（会被排除表/清空/手动删除影响，且目录没同步就没了）
+       ⇒ 这里**直接问上游要全量 id**（不落盘、不过滤、不去重合并目录），再并上目录里的 id。
+       ⛔ 只读：不改目录、不改倍率；拉不到就回 `ids` = 目录那份 + 逐条原因，面板照常手填。 */
     if (p === "/admin/services" && req.method === "GET") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       const kb = db.services.kb || {};
