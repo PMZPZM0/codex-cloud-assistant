@@ -14,6 +14,7 @@ web/                       # 管理面板与登录门（纯静态）
   index.html               #   登录门
   fnos-guide.html          #   知识库/记忆对接教程（可整段交给 AI）
 deploy/install.sh          # 一键部署（systemd）
+deploy/model-gateway.md    # 模型 / 记忆网关的单机部署（两套方案，与本仓可同机）
 config.example.env         # 配置模板（含全部可配项说明）
 VERSION                    # 当前版本（面板「检查更新」用）
 ```
@@ -69,6 +70,19 @@ docker run -d --name cca -p 8091:8091 \
   -e HARNESS_ACCOUNTS_ORIGINS=https://admin.example.com \
   codex-cloud-admin
 ```
+
+### 方式 D：模型网关（另一套服务，按需）
+
+本仓只管「账号 / 积分 / 模型目录」；客户端真正发推理请求打的是**模型网关**（可带记忆注入）。
+网关要不要自己装、怎么装，见 **[`deploy/model-gateway.md`](deploy/model-gateway.md)**：
+
+- **方案 A 全栈单机**：记忆代理 + 上游中继 + Caddy 全放一台服务器（一个 compose，带验证清单）；
+- **方案 B 仅模型通道**：不部署记忆，只把 `/claude-code/<instance>` 前缀剥掉直连中继
+  （⚠️ 先决条件：客户端发的是记忆代理签发的 `sk-mem-*`，中继只认自己的 key，不做换 key 映射会 401）；
+- 另附 **frp 隧道形态**（NAS 在家）的风险说明与一页 6 条命令的排障手册。
+
+⛔ 若仍用 frp 隧道：客户端容器**必须** `restart: always`。真实事故：隧道客户端 13:00 退出、
+直到 16:43 机器重开才恢复，期间所有子域 502 而主站正常 —— 极难第一眼看出。
 
 ## 3. 反向代理（必须）
 
