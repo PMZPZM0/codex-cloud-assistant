@@ -160,6 +160,29 @@ server {
 | 闲时时段 | 定义"哪些时间算闲时"（倍率在模型表里逐个填） |
 | 用户 · 权益 · 积分 | 开通知识库/记忆（按时长+额度）、发/扣积分、云存储配额 |
 
+### 5.1 「上游 API」到底填哪个地址（部署最常踩的坑）
+
+⛔ **控制台地址 ≠ API 地址**。填成控制台时，面板能连上但读不到模型（返回的是登录页 HTML）：
+
+```
+https://你的域名                  → 302 到 /login（控制台）        ❌ 不是 API
+https://你的域名/v1               → GET /v1/models 返回 JSON       ✅ 常见网关
+https://你的域名/claude-code/default → 本产品记忆网关的默认实例     ✅ 自带记忆注入
+```
+
+自查一条命令即可（**返回 JSON 才对**，返回 HTML 就是填错了）：
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' https://你的域名/v1/models -H "Authorization: Bearer <密钥>"
+# 期望：200 application/json（或 401 application/json —— 说明端点对、只是密钥不对）
+# 若出现 text/html 或 302，说明这是控制台页面，不是 API
+```
+
+从 **1.0.8 起**面板会把「实际使用的上游地址」直接显示在「模型管理」页，并在同步失败时带上地址；
+测试连通性也会区分三档：✓ 解析出模型列表 / ⚠ 能连通但返回网页（控制台）/ ✗ 不通。
+候选端点表（管理目录 → `/v1/models` → `/models` → `/claude-code/default/v1/models`）
+会依次尝试，**填了 API 地址 + 密钥就能自动识别**，不需要手工指定路径。
+
 ## 6. 更新
 
 ```bash

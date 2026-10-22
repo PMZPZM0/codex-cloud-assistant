@@ -398,11 +398,19 @@ function splitUpstreamBase(base) {
  *     探测与同步自动跟着走 —— 这就是「不写死」的落点。 */
 function catalogCandidates(base) {
   const { root, openai } = splitUpstreamBase(base);
-  return [
+  const list = [
     { name: "管理目录 /api/model-catalog", url: `${root}/api/model-catalog?realm=cn` },
     { name: "OpenAI 兼容 /v1/models", url: `${openai}/models` },
     { name: "通用 /models", url: `${root}/models` },
   ];
+  /* 10-22 部署实测：按本仓文档装出来的记忆网关，API 根是
+     `https://<域名>/claude-code/<实例>`（默认实例 default），而管理员很容易把**控制台地址**
+     （`https://<域名>`，会 302 到 /login）填进来。这里补一条本产品自带形态的候选：
+     地址没带 /claude-code/ 前缀时，顺手试一下默认实例的模型列表。 */
+  if (!/\/claude-code\//i.test(root)) {
+    list.push({ name: "记忆网关 /claude-code/default/v1/models", url: `${root}/claude-code/default/v1/models` });
+  }
+  return list;
 }
 /** 从上游各种「模型列表」形状里取数组（实测存在四种以上，只认 `data` 会把 WBM 漏掉）：
  *  顶层数组 / `{data:[]}` / `{models:[]}` / `{list:[]}` / `{items:[]}` / `{result:[]}` /
@@ -456,11 +464,18 @@ async function probeGet(base, probe, key, authHeader) {
       const rows = modelsFromPayload(j);
       if (rows) count = rows.length;
     } catch { /* 非 JSON 不致命：能连通但格式不认 */ }
+    /* 10-22 部署现场：管理员把**控制台地址**当 API 填进来，浏览器跟随 302 到 /login 后拿到 HTML，
+       之前只能笼统说「不是模型列表」。这里把「跳转过」「返回是网页」两种证据单独带出来，
+       面板才能直接说「这是控制台，不是 API 地址」。 */
+    const contentType = String(r.headers.get("content-type") || "");
+    const html = /text\/html|application\/xhtml/i.test(contentType) || /^\s*<(!doctype|html)/i.test(text.slice(0, 200));
     return {
       name: probe.name, path: probe.path, optional: Boolean(probe.optional), ok: r.ok, status: r.status,
-      ms: Date.now() - t0, count,
+      ms: Date.now() - t0, count, html, redirected: Boolean(r.redirected), finalUrl: r.url || target,
       hint: r.ok
-        ? (count == null && probe.wantList ? "能连通，但返回的不是模型列表（多半是网关首页 / 登录页 HTML）" : "")
+        ? (count == null && probe.wantList
+          ? (html ? "能连通，但返回的是网页（控制台 / 登录页），不是模型 API" : "能连通，但返回的不是模型列表")
+          : "")
         : explainProbeStatus(r.status),
     };
   } catch (error) {
@@ -2337,7 +2352,10 @@ const server = http.createServer(async (req, res) => {
         message: modelProbe
           ? `连通：${modelProbe.name}，${modelProbe.count} 个模型（${modelProbe.ms}ms）`
           : reachable
-            ? `能连通，但读不到模型列表：这些地址返回的是网页/重定向（多为控制台首页或登录页），不是模型 API。请把地址填到 API 根，例如 https://你的域名/v1 或 https://你的域名/claude-code/default。`
+            ? (reachable.html
+              ? `这个地址打开的是**控制台网页**（返回 HTML${reachable.redirected ? "，并跳转到登录页" : ""}），不是模型 API。请改填 API 根：https://你的域名/v1 或 https://你的域名/claude-code/default（本产品记忆网关的默认实例）。`
+              : "能连通，但读不到模型列表：返回内容不是模型数组。确认这个地址是不是 API 根（多数网关是 /v1/models）。")
+            
             : "不可达：候选端点都不通 —— 看下面每一行的原因",
       });
     }
