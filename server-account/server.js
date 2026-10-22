@@ -358,6 +358,40 @@ function currentCatalogBase() {
   const own = o && o.catalogBase ? String(o.catalogBase).trim().replace(/\/+$/, "") : "";
   return own || currentUpstreamBase();
 }
+/* ── 模型映射：上游 id → **展示名**（10-22 用户：「我要求同步出来模型映射后的模型，sub2api 也是一样」）
+   上游开了模型映射时，`/v1/models` 给的是**别名**（如 `cn:auto`），真实模型只有上游自己知道。
+   这里维护一张表，三种来源按优先级：目录条目自带字段 > 手工表（含「自动探测」写回）。
+   ⛔ 只改 `name`（展示名），**绝不改 `id`** —— 客户端调用必须用上游认识的 id。 */
+function modelMapTable() {
+  const m = db && db.upstream && db.upstream.modelMap;
+  return m && typeof m === "object" && !Array.isArray(m) ? m : {};
+}
+/** 目录条目里上游自带的映射字段（有的网关会带，那就自动用，不用手工填）。 */
+function mappedFromRow(row) {
+  const r = row || {};
+  const v = r.mapped_model ?? r.mappedModel ?? r.target_model ?? r.targetModel
+    ?? r.upstream_model ?? r.upstreamModel ?? r.mapping_target ?? "";
+  return String(v || "").trim();
+}
+function modelLabelFor(id, upstreamName, row) {
+  const key = String(id || "").trim();
+  const auto = mappedFromRow(row);
+  if (auto && auto !== key) return auto;
+  const mapped = modelMapTable()[key];
+  return String(mapped || "").trim() || String(upstreamName || key).trim();
+}
+/** 映射改了但不想重拉上游时：就地重算已落盘目录的展示名（id 不动）。 */
+function applyModelMap() {
+  let changed = 0;
+  for (const item of (db.modelCatalog.list || [])) {
+    if (!item || !item.id) continue;
+    if (!item.upstreamName) item.upstreamName = String(item.name || item.id);
+    const next = modelLabelFor(item.id, item.upstreamName);
+    if (item.name !== next) { item.name = next; changed += 1; }
+  }
+  if (changed) persist();
+  return changed;
+}
 /** 地址归一化（10-18 用户令「协议适配性尽可能强，以兼容更多协议类型」）：
     · 接受 `https://` / `http://` / **裸主机**（`api.example.com` ⇒ 自动补 https）
     · 允许内网与回环地址（部署在自己机器/内网时是常态）、自定义端口、任意路径前缀
@@ -1486,7 +1520,8 @@ const server = http.createServer(async (req, res) => {
             const oaId = String(m.id || "").trim();
             const oaRate = String((m && (m.credits ?? m.credit ?? m.rate ?? m.ratio)) || "").trim() || rateFor(oaId);
             return {
-              id: oaId, name: oaId,
+              /* ⛔ name = **映射后的展示名**，id 仍是上游 id（调用要用它）；upstreamName 留底便于回退。 */
+              id: oaId, name: modelLabelFor(oaId, oaId, m), upstreamName: oaId,
               description: oaRate ? "OpenAI / Claude 兼容目录（倍率取自上游 pricing / billing）" : "OpenAI 兼容目录（上游未提供倍率与规格）",
               credits: oaRate, tags: [], series: "",
               contextLength: null, maxOutputTokens: null,
@@ -1494,12 +1529,15 @@ const server = http.createServer(async (req, res) => {
               creditsMissing: !oaRate,
             };
           }
+          const cid = String(m.id || "").trim();
+          const upstreamName = String(m.name || m.id || "").trim();
           return {
-            id: String(m.id || "").trim(),
-            name: String(m.name || m.id || "").trim(),
+            id: cid,
+            name: modelLabelFor(cid, upstreamName, m),
+            upstreamName,
             description: String(m.description || "").slice(0, 200),
             /* WBM 目录自带倍率；个别网关叫 credit / rate / ratio，统一兜住，最后再落上游 pricing/billing。 */
-            credits: String(m.credits ?? m.credit ?? m.rate ?? m.ratio ?? "").trim() || rateFor(String(m.id || "").trim()),
+            credits: String(m.credits ?? m.credit ?? m.rate ?? m.ratio ?? "").trim() || rateFor(cid),
             tags: Array.isArray(m.tags) ? m.tags.slice(0, 6).map(String) : [],
             series: String(m.series || ""),
             contextLength: Number(m.context_length || 0) || null,
@@ -1976,6 +2014,9 @@ const server = http.createServer(async (req, res) => {
            面板据此显示「到底在从哪个地址拉目录」，不然报错只说「没给出列表」，排查无从下手。 */
         catalogBase: currentCatalogBase(),
         rateSource: db.modelCatalog.rateSource || "",
+        /* 模型映射表（上游 id → 展示名）：面板「模型映射」区回显用；list 里的 name 已按它映射过。 */
+        modelMap: modelMapTable(),
+        mappedCount: (db.modelCatalog.list || []).filter((m) => m && m.upstreamName && m.name && m.name !== m.upstreamName).length,
         catalogFrom: db.modelCatalog.base || "",
         autoSyncPaused: Boolean(db.modelCatalog.autoSyncDisabled),
         /* ⛔ 目录来源 ≠ 当前上游 ⇒ 面板显示「已过期」，而不是静默保留旧目录让用户以为没生效。 */
@@ -2491,7 +2532,8 @@ const server = http.createServer(async (req, res) => {
       }
       const providedKey = String(body && body.gatewayKey || "").trim();
       const prev = db.upstream || {};
-      db.upstream = { base: norm.base, catalogBase, gatewayKey: providedKey || prev.gatewayKey || "" };
+      /* ⛔ 展开 prev：直接重建对象会把 `modelMap`（模型映射表）冲掉 —— 改个地址就丢映射。 */
+      db.upstream = { ...prev, base: norm.base, catalogBase, gatewayKey: providedKey || prev.gatewayKey || "" };
       persist();
       console.log(`[upstream] ${me.username} 更新上游 API 地址 → ${norm.base}${catalogBase ? `（目录同步 → ${catalogBase}）` : ""}${providedKey ? "（含新网关密钥）" : "（沿用原网关密钥）"}${norm.insecure ? " ⚠️ http 明文" : ""}`);
       /* ★ 10-22 用户：「只要 API 地址和密钥填了，模型目录就要更新并且识别出来」——
@@ -2598,9 +2640,23 @@ const server = http.createServer(async (req, res) => {
       }
       const upstreamCount = ids.length;
       for (const id of catalogIds) if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
+      /* 展示名（映射后）：目录里有就用目录的 upstreamName 兜底，再套映射表。
+         ⛔ 下拉显示映射后名字、value 仍是上游 id —— 不然选中就直接拿错 id 去调用了。 */
+      const nameOf = new Map();
+      for (const item of (db.modelCatalog.list || [])) {
+        const id = String((item && item.id) || "").trim();
+        if (id) nameOf.set(id, String(item.upstreamName || item.id || ""));
+      }
+      for (const row of fetched.rows || []) {
+        const id = String((row && row.id) || "").trim();
+        if (id && !nameOf.has(id)) nameOf.set(id, String((row && (row.name || row.id)) || ""));
+      }
+      const items = ids.map((id) => ({ id, name: modelLabelFor(id, nameOf.get(id) || id) }));
       return send(200, {
         ok: Boolean(upstreamCount),
         ids,
+        items,
+        mappedCount: items.filter((it) => it.name && it.name !== it.id).length,
         upstreamCount,
         fromCatalog: catalogIds.length,
         source: fetched.source || "",
@@ -2608,6 +2664,125 @@ const server = http.createServer(async (req, res) => {
         message: upstreamCount
           ? `上游实时返回 ${upstreamCount} 个模型${ids.length > upstreamCount ? `（并上目录共 ${ids.length} 个）` : ""}`
           : `上游没给出模型列表：${(fetched.tried || []).join(" · ") || "未知原因"}`,
+      });
+    }
+    /* 管理员：**模型映射表**（读 / 写）。10-22 用户：「我要求同步出来模型映射后的模型，sub2ai 也是一样」。
+       支持两种提交：`{ map: {上游id: 展示名} }` 或 `{ text: "a => b\n..." }`（`=>` `->` `=` 制表符/逗号/竖线都认）。
+       ⛔ 只改展示名（name），不动 id；写完成即就地重算目录，不用重拉上游。 */
+    if (p === "/admin/upstream/model-map" && req.method === "GET") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const map = modelMapTable();
+      return send(200, { ok: true, map, count: Object.keys(map).length });
+    }
+    if (p === "/admin/upstream/model-map" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const body = await readBody();
+      let next = null;
+      if (body && body.map && typeof body.map === "object" && !Array.isArray(body.map)) {
+        next = body.map;
+      } else if (body && typeof body.text === "string") {
+        next = {};
+        for (const raw of body.text.split(/\r?\n/)) {
+          const line = String(raw || "").trim();
+          if (!line || line.startsWith("#") || line.startsWith("//")) continue;
+          const m = line.match(/^(.+?)\s*(?:=>|->|\t|\||,|=)\s*(.+)$/);
+          if (!m) continue;
+          const from = m[1].trim();
+          const to = m[2].trim();
+          if (from && to) next[from] = to;
+        }
+      }
+      if (!next) return send(400, { ok: false, error: "没有可保存的映射（要 {map} 或 {text}）" });
+      /* 清洗：只留非空字符串对；条数上限防炸库。 */
+      const clean = {};
+      for (const [k, v] of Object.entries(next)) {
+        const from = String(k || "").trim();
+        const to = String(v ?? "").trim();
+        if (from && to && from !== to) clean[from] = to;
+        if (Object.keys(clean).length >= 2000) break;
+      }
+      db.upstream = { ...(db.upstream || {}), modelMap: clean };
+      persist();
+      const changed = applyModelMap();
+      console.log(`[upstream] ${me.username} 更新模型映射 ${Object.keys(clean).length} 条（目录展示名更新 ${changed} 个）`);
+      return send(200, { ok: true, map: clean, count: Object.keys(clean).length, renamed: changed });
+    }
+    /* 管理员：**自动探测映射**（10-22）。对目录里的模型逐个发一次 `max_tokens:1` 的极小请求，
+       读响应里的 `model` —— 上游若做了映射，这里回的是**真实模型名**（与请求 id 不同）。
+       ⛔ 会产生极小消耗（每个模型约 1 个输出 token），所以只在管理员主动点按钮时跑，不自动轮询。
+       ⛔ 上游原样回显请求 id 时无法揭示映射 ⇒ 记为 echoed，不写表（不猜）。 */
+    if (p === "/admin/upstream/probe-map" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const body = await readBody();
+      const base = currentUpstreamBase();
+      const authKey = WBM_TOKEN || currentGatewayKey();
+      if (!base) return send(400, { ok: false, error: "还没配置上游地址" });
+      const onlyMissing = Boolean(body && body.onlyMissing);
+      const limit = Math.max(1, Math.min(60, Number(body && body.limit) || 20));
+      const existing = modelMapTable();
+      const ids = (db.modelCatalog.list || [])
+        .map((m) => String((m && m.id) || "").trim())
+        .filter((id) => id && !(onlyMissing && existing[id]))
+        .slice(0, limit);
+      if (!ids.length) return send(200, { ok: true, map: existing, probed: 0, found: 0, echoed: 0, failed: 0, message: "目录里没有需要探测的模型" });
+
+      const { root, openai } = splitUpstreamBase(base);
+      const post = async (url, headers, payload) => {
+        const res = await fetch(url, {
+          method: "POST", headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify(payload), signal: AbortSignal.timeout(10_000),
+        });
+        const text = await res.text().catch(() => "");
+        return { status: res.status, ok: res.ok, text };
+      };
+      const probeOne = async (id) => {
+        const bearer = authKey ? { Authorization: `Bearer ${authKey}` } : {};
+        const anthropic = { ...(authKey ? { "x-api-key": authKey } : {}), "anthropic-version": "2023-06-01" };
+        let lastError = "";
+        for (const step of [
+          { url: `${openai}/chat/completions`, headers: bearer, payload: { model: id, max_tokens: 1, stream: false, messages: [{ role: "user", content: "hi" }] } },
+          { url: `${root}/chat/completions`, headers: bearer, payload: { model: id, max_tokens: 1, stream: false, messages: [{ role: "user", content: "hi" }] } },
+          { url: `${openai}/messages`, headers: anthropic, payload: { model: id, max_tokens: 1, messages: [{ role: "user", content: "hi" }] } },
+        ]) {
+          try {
+            const r = await post(step.url, step.headers, step.payload);
+            if (r.status === 404 || r.status === 405) continue;
+            if (!r.ok) { lastError = `HTTP ${r.status}`; break; }
+            let j = null; try { j = JSON.parse(r.text); } catch { /* 非 JSON 当没探到 */ }
+            const got = String((j && (j.model || (j.message && j.message.model))) || "").trim();
+            return got ? { ok: true, model: got } : { ok: false, message: "响应里没有 model 字段" };
+          } catch (error) {
+            lastError = classifyFetchError(error);
+          }
+        }
+        return { ok: false, message: lastError || "端点都不通" };
+      };
+
+      const map = { ...existing };
+      let found = 0, echoed = 0, failed = 0;
+      const results = [];
+      /* 并发 5：几十个模型也能在一分钟内跑完，又不至于把上游打爆。 */
+      for (let i = 0; i < ids.length; i += 5) {
+        const chunk = ids.slice(i, i + 5);
+        const done = await Promise.all(chunk.map(async (id) => ({ id, r: await probeOne(id) })));
+        for (const { id, r } of done) {
+          if (r.ok && r.model && r.model !== id) { map[id] = r.model; found += 1; results.push({ id, model: r.model, state: "mapped" }); }
+          else if (r.ok && r.model === id) { echoed += 1; results.push({ id, model: r.model, state: "echoed" }); }
+          else { failed += 1; results.push({ id, model: "", state: "failed", message: r.message || "" }); }
+        }
+      }
+      if (found) {
+        db.upstream = { ...(db.upstream || {}), modelMap: map };
+        persist();
+        applyModelMap();
+      }
+      console.log(`[upstream] ${me.username} 自动探测映射：探测 ${ids.length}，发现 ${found}，回显 ${echoed}，失败 ${failed}`);
+      return send(200, {
+        ok: found > 0,
+        map, probed: ids.length, found, echoed, failed, results,
+        message: found
+          ? `探测 ${ids.length} 个：发现 ${found} 个映射${echoed ? `，${echoed} 个上游原样回显（看不出映射）` : ""}${failed ? `，${failed} 个失败` : ""}`
+          : `探测 ${ids.length} 个：没发现映射${echoed ? `（${echoed} 个原样回显请求的 id —— 这个上游的映射不会体现在响应里）` : ""}${failed ? `，${failed} 个失败` : ""}`,
       });
     }
     /* 管理员：**聊天测试**（10-22 用户：「加一个聊天测试功能」）。
