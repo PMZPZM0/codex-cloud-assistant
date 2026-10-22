@@ -1693,15 +1693,32 @@
           + (hint ? '<div class="hint" style="margin-top:3px">' + esc(hint) + "</div>" : "")
           + "</div>";
       }).join("");
+      var needSave = j.recognized && j.changed;
       box.style.display = "";
       box.innerHTML = '<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field)">'
         + '<div style="font-weight:600;color:' + (j.recognized ? "var(--ok)" : j.ok ? "var(--warn)" : "var(--bad)") + '">' + esc(j.message || "") + "</div>"
         + '<div class="hint" style="margin:4px 0 6px">地址 ' + esc(j.base) + " · 总耗时 " + j.elapsedMs + "ms"
         + (j.warning ? " · ⚠️ " + esc(j.warning) : "") + (j.hasKey ? "" : " · 未带网关密钥") + "</div>"
-        + rows + "</div>";
-      /* 联动：真的识别出模型 ⇒ 立刻刷新「模型管理」表（用户要的「上面识别出来了，下面自动更新」）。 */
-      if (j.recognized) { try { loadAdminModels(); } catch (e) {} }
-      auSay(j.recognized ? "已识别 " + j.modelCount + " 个模型（模型管理已同步）" : (j.ok ? "能连通，但这个地址读不到模型列表" : "不可达（看上方逐行原因）"), j.recognized ? "ok" : (j.ok ? "warn" : "bad"));
+        + rows
+        /* 10-22 现场：上面测出 12 个模型，但地址**没点保存** ⇒ 下面模型管理仍在用旧地址（控制台），永远空。 */
+        + (needSave ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line-soft)">'
+            + '<div class="hint" style="color:var(--warn)">这个地址还没保存 —— 模型管理现在仍在用 ' + esc(j.savedBase || "未配置") + ' 拉目录。</div>'
+            + '<button class="btn sm" id="auAdopt" style="margin-top:6px">保存并同步（' + (j.modelCount || 0) + ' 个模型）</button></div>' : "")
+        + "</div>";
+      /* 联动：识别出模型且地址**已保存** ⇒ 刷新「模型管理」；没保存就出按钮，别假装已同步。 */
+      if (needSave && $("auAdopt")) $("auAdopt").onclick = function () {
+        $("auAdopt").disabled = true;
+        api("/admin/upstream", { method: "POST", body: { base: $("auBase").value.trim(), catalogBase: $("auCatalogBase") ? $("auCatalogBase").value.trim() : "", gatewayKey: $("auKey").value.trim() } }).then(function (rr) {
+          $("auAdopt").disabled = false;
+          if (rr.ok && rr.j && rr.j.ok) {
+            var sy = rr.j.sync || {};
+            auSay(sy.ok ? ("已保存并同步：" + (sy.count || 0) + " 个模型") : ("已保存，但目录仍未识别：" + (sy.message || sy.error || "")), sy.ok ? "ok" : "bad");
+            loadUpstreamCfg(); loadAdminModels();
+          } else { auSay("保存失败：" + ((rr.j && rr.j.error) || rr.status), "bad"); }
+        }).catch(function () { $("auAdopt").disabled = false; auSay("网络错误", "bad"); });
+      };
+      if (j.recognized && !needSave) { try { loadAdminModels(); } catch (e) {} }
+      auSay(needSave ? ("已识别 " + j.modelCount + " 个模型 —— 点「保存并同步」后模型管理才会更新") : (j.recognized ? "已识别 " + j.modelCount + " 个模型（模型管理已同步）" : (j.ok ? "能连通，但这个地址读不到模型列表" : "不可达（看上方逐行原因）")), needSave ? "warn" : (j.recognized ? "ok" : (j.ok ? "warn" : "bad")));
     }).catch(function () {
       btn.disabled = false; btn.textContent = "测试连通性"; auSay("网络错误", "bad");
     });

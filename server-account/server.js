@@ -2342,6 +2342,12 @@ const server = http.createServer(async (req, res) => {
         ok: Boolean(reachable),
         recognized: Boolean(modelProbe),
         base: norm.base,
+        /* 10-22 现场：用户在上面「测试连通性」看到 12 个模型，但没点「保存」⇒
+           下面的模型管理还在用旧地址（mg 控制台）拉目录，永远空。
+           这两个字段让面板能直接提示「本次测试的地址还没保存」，并给一键保存。 */
+        savedBase: currentUpstreamBase(),
+        savedCatalogBase: currentCatalogBase(),
+        changed: norm.base !== currentUpstreamBase() || norm.base !== currentCatalogBase(),
         insecure: norm.insecure,
         warning: norm.insecure ? "http 明文传输：仅建议内网使用" : "",
         hasKey: Boolean(key),
