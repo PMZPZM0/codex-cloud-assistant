@@ -19,16 +19,46 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const PORT = Number(process.env.HARNESS_ACCOUNTS_PORT || 8091);
-/* 本服务版本（10-18 用户令「云端管理加一个更新功能」）：
-   从包根的 `VERSION` 读；读不到就 "dev"（⛔ 不写死在代码里，否则每次发版要改两处）。 */
+/* 本服务版本（10-18「云端管理加更新功能」）：
+   ⛔⛔ 读**自己这份部署**的 VERSION —— 先看 server.js 同目录（摊平部署），再看上级（分发包的 server-account/）。
+      曾经只读 `..`，主站的 `..` 是 `/home/ubuntu`（没有 VERSION）⇒ 版本恒为 dev，
+      而比对的是分发仓的版本号 ⇒ **永远显示"有新版本"**（用户实测）。
+   ⛔ 不写死在代码里：否则每次发版要改两处，迟早不一致。 */
 const APP_VERSION = (() => {
-  try { return String(fs.readFileSync(path.join(__dirname, "..", "VERSION"), "utf8")).trim() || "dev"; } catch { return "dev"; }
+  for (const p of [path.join(__dirname, "VERSION"), path.join(__dirname, "..", "VERSION")]) {
+    try {
+      const v = String(fs.readFileSync(p, "utf8")).trim();
+      if (v) return v;
+    } catch { /* 继续找下一个 */ }
+  }
+  return "dev";
 })();
-/** 本仓地址：面板「检查更新」据此对比最新 tag，也用于"把这套部署到你自己的服务器"入口。 */
-const REPO_URL = String(process.env.HARNESS_REPO_URL || "https://github.com/PMZPZM0/codex-cloud-assistant").replace(/\/+$/, "");
-/** 更新检查的源（用户令「**默认走国内镜像**更新」）：国内镜像优先，直连最后兜底。
+/** 可自部署的那个仓（面板「获取可部署版本」指向它）。 */
+const DEPLOY_REPO = "https://github.com/PMZPZM0/codex-cloud-assistant";
+/** **该跟谁比版本**（10-18）：分发包比自己的仓；主站（非 git + 有 selfupdate.sh）比云助手仓。
+ *  ⛔ 拿分发仓的版本号去比主站，必然"永远有新版本" —— 这是之前那个 bug 的第二半。 */
+const UPDATE_REPO = (() => {
+  const envRepo = String(process.env.HARNESS_UPDATE_REPO || "").trim();
+  if (envRepo) return envRepo.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "").replace(/\/+$/, "");
+  const isGit = (() => { try { return fs.existsSync(path.join(__dirname, "..", ".git")); } catch { return false; } })();
+  const hasSelfUpdate = (() => {
+    for (const p of [path.join(__dirname, "selfupdate.sh"), path.join(__dirname, "..", "selfupdate.sh")]) {
+      try { if (fs.existsSync(p)) return true; } catch { /* ignore */ }
+    }
+    return false;
+  })();
+  return (!isGit && hasSelfUpdate) ? "PMZPZM0/codex-harness-cloud-src" : "PMZPZM0/codex-cloud-assistant";
+})();
+const UPDATE_REPO_URL = "https://github.com/" + UPDATE_REPO;
+/** 版本信息的来源（10-18 改**清单驱动**）：
+ *  · 云助手仓 ⇒ `cloud/manifest.json`（含 version + 文件列表，发版只改它）
+ *  · 分发仓   ⇒ 根 `VERSION`（它是 git 部署，清单由 git 自己管）
+ *  ⛔ 路径写错的话所有镜像都会 404，面板就永远"查不到最新版"。 */
+const UPDATE_VERSION_PATH = UPDATE_REPO === "PMZPZM0/codex-harness-cloud-src" ? "cloud/manifest.json" : "VERSION";
+/** 更新检查的源（10-18 用户令「**默认走国内镜像**更新」）：
+ *  **国内镜像优先**，直连放最后兜底。按顺序试、第一个成功的就用。
  *  ⛔ 用镜像的 raw 透传（`<mirror>https://raw.githubusercontent.com/...`）——
- *     raw 不计 GitHub API 配额（匿名 API 60/h/IP，超了就是 403，很容易被误读成"被墙"）。 */
+ *     raw 不计 GitHub API 配额；⛔ 它只读一个 VERSION 文本，不涉及代码与执行。 */
 const UPDATE_MIRRORS = [
   { name: "ghfast（国内）", prefix: "https://ghfast.top/" },
   { name: "gh-proxy（国内）", prefix: "https://gh-proxy.com/" },
@@ -37,8 +67,8 @@ const UPDATE_MIRRORS = [
   { name: "moeyy（国内）", prefix: "https://github.moeyy.xyz/" },
   { name: "直连（兜底）", prefix: "" },
 ];
-/** 版本比较（只比 x.y.z 数字段）：a>b 返回正数。
- *  ⛔ 不要字符串比较 —— "1.0.10" < "1.0.9" 会判错，用户就一直以为没有新版本。 */
+/** 版本比较（只比 x.y.z 的数字段）：a>b 返回正数。
+ *  ⛔ 不要用字符串比较 —— `"1.0.10" < "1.0.9"` 会判错，用户就会一直以为"没有新版本"。 */
 function cmpVersion(a, b) {
   const pa = String(a || "").replace(/^v/, "").split(".").map((n) => Number(n) || 0);
   const pb = String(b || "").replace(/^v/, "").split(".").map((n) => Number(n) || 0);
@@ -87,9 +117,7 @@ function readSecret(name, envName) {
 /* ⛔ 10-18：这些从 `const` 改为 `let` —— 允许管理员在面板里配（覆盖环境变量，**热生效**）。
    覆盖来源 = `db.services.{kb,memory}`，由 `applyServiceOverrides()` 在 db 加载后与每次保存后套用。
    ⛔ 留空的字段一律**回落环境变量/凭据**（不是清空）—— 否则改一个字段会把其它配置抹掉。 */
-let WEKNORA_BASE = String(process.env.WEKNORA_BASE || "").replace(/\/+$/, "");
-/* ⛔ 分发包：默认**留空**（不指向作者自己的服务器）。空 = 该能力未配置，
-   管理员在面板「知识库 · 记忆空间」里填，或写进 config.env。 */
+let WEKNORA_BASE = String(process.env.WEKNORA_BASE || "https://kb.ppz123.asia").replace(/\/+$/, "");
 const WEKNORA_ENV_BASE = WEKNORA_BASE;                     // 环境变量原值（回退与"是否被覆盖"判定用）
 let WEKNORA_ADMIN_KEY = readSecret("weknora-admin-key", "WEKNORA_ADMIN_KEY");
 const WEKNORA_ENV_ADMIN_KEY = WEKNORA_ADMIN_KEY;
@@ -114,12 +142,12 @@ function kbModelConfigBody() {
   if (WEKNORA_VLM_MODEL_ID) body.vlm_config = { enabled: true, model_id: WEKNORA_VLM_MODEL_ID };
   return body;
 }
-let MEMHUB_BASE = String(process.env.MEMHUB_BASE || "").replace(/\/+$/, "");
+let MEMHUB_BASE = String(process.env.MEMHUB_BASE || "https://mem.ppz123.asia").replace(/\/+$/, "");
 const MEMHUB_ENV_BASE = MEMHUB_BASE;
 let MEMHUB_ADMIN_KEY = readSecret("memhub-admin-key", "MEMHUB_ADMIN_KEY");
 const MEMHUB_ENV_ADMIN_KEY = MEMHUB_ADMIN_KEY;
 let MEMHUB_INSTANCE = String(process.env.MEMHUB_INSTANCE || "default").trim();
-let MEMHUB_PROXY_BASE = String(process.env.MEMHUB_PROXY_BASE || "").replace(/\/+$/, "");
+let MEMHUB_PROXY_BASE = String(process.env.MEMHUB_PROXY_BASE || "https://memapi.ppz123.asia").replace(/\/+$/, "");
 const MEMHUB_ENV_PROXY_BASE = MEMHUB_PROXY_BASE;
 const MEMHUB_ENV_INSTANCE = MEMHUB_INSTANCE;
 
@@ -216,7 +244,7 @@ async function ensureMemoryFor(username) {
     cur.memUserId = String((json.data && json.data.user_id) || "");
     persist();
   }
-  return { ok: true, baseUrl: `${MEMHUB_PROXY_BASE}/v1`, userKey: cur.memKey, instanceId: MEMHUB_INSTANCE, apiKeyHeader: "X-Tdai-User-Key" };
+  return { ok: true, baseUrl: `${MEMHUB_PROXY_BASE}/claude-code/default/v1`, userKey: cur.memKey, instanceId: MEMHUB_INSTANCE, apiKeyHeader: "X-Tdai-User-Key" };
 }
 
 /* ── 10-16 权益：知识库 / 记忆「按时长 + 额度」激活（用户定案）──────────────────────
@@ -358,40 +386,6 @@ function currentCatalogBase() {
   const own = o && o.catalogBase ? String(o.catalogBase).trim().replace(/\/+$/, "") : "";
   return own || currentUpstreamBase();
 }
-/* ── 模型映射：上游 id → **展示名**（10-22 用户：「我要求同步出来模型映射后的模型，sub2api 也是一样」）
-   上游开了模型映射时，`/v1/models` 给的是**别名**（如 `cn:auto`），真实模型只有上游自己知道。
-   这里维护一张表，三种来源按优先级：目录条目自带字段 > 手工表（含「自动探测」写回）。
-   ⛔ 只改 `name`（展示名），**绝不改 `id`** —— 客户端调用必须用上游认识的 id。 */
-function modelMapTable() {
-  const m = db && db.upstream && db.upstream.modelMap;
-  return m && typeof m === "object" && !Array.isArray(m) ? m : {};
-}
-/** 目录条目里上游自带的映射字段（有的网关会带，那就自动用，不用手工填）。 */
-function mappedFromRow(row) {
-  const r = row || {};
-  const v = r.mapped_model ?? r.mappedModel ?? r.target_model ?? r.targetModel
-    ?? r.upstream_model ?? r.upstreamModel ?? r.mapping_target ?? "";
-  return String(v || "").trim();
-}
-function modelLabelFor(id, upstreamName, row) {
-  const key = String(id || "").trim();
-  const auto = mappedFromRow(row);
-  if (auto && auto !== key) return auto;
-  const mapped = modelMapTable()[key];
-  return String(mapped || "").trim() || String(upstreamName || key).trim();
-}
-/** 映射改了但不想重拉上游时：就地重算已落盘目录的展示名（id 不动）。 */
-function applyModelMap() {
-  let changed = 0;
-  for (const item of (db.modelCatalog.list || [])) {
-    if (!item || !item.id) continue;
-    if (!item.upstreamName) item.upstreamName = String(item.name || item.id);
-    const next = modelLabelFor(item.id, item.upstreamName);
-    if (item.name !== next) { item.name = next; changed += 1; }
-  }
-  if (changed) persist();
-  return changed;
-}
 /** 地址归一化（10-18 用户令「协议适配性尽可能强，以兼容更多协议类型」）：
     · 接受 `https://` / `http://` / **裸主机**（`api.example.com` ⇒ 自动补 https）
     · 允许内网与回环地址（部署在自己机器/内网时是常态）、自定义端口、任意路径前缀
@@ -410,26 +404,73 @@ function normalizeUpstreamBase(input) {
   if (!u.hostname) return { ok: false, error: "缺少主机名" };
   return { ok: true, base: (u.origin + u.pathname).replace(/\/+$/, ""), insecure: u.protocol === "http:" };
 }
-/** 把上游地址拆成「管理根」与「OpenAI 基址」（10-22 用户实测踩到的坑）：
- *  管理员按网关文档填 `https://host/v1`，而目录端点 `/api/model-catalog` 挂在**根**上；
- *  直接 `base + path` 会拼成 `/v1/api/model-catalog`、`/v1/v1/models` —— 打到网关的 SPA
- *  catch-all 拿回 **200 HTML**，于是面板显示「能连通，但没解析出列表」/ 同步报
- *  `wbm-unreachable`（`.json()` 抛异常）。两个都填对才不会看运气。
- *  · root   = 去掉结尾一层 `/v1`
- *  · openai = 以 `/v1` 结尾就原样，否则补 `/v1` */
+/** 把 fetch 的异常翻译成人话（面板直接显示，管理员不必去翻服务器日志） */
+function classifyFetchError(error) {
+  const msg = String((error && (error.name + ": " + error.message)) || error || "");
+  if (/TimeoutError|AbortError|timed? ?out/i.test(msg)) return "超时（8 秒内无响应：地址/端口不对，或被防火墙拦了）";
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(msg)) return "DNS 解析失败（域名拼错，或这台服务器没有可用 DNS）";
+  if (/CERT|SSL|TLS|self.signed|unable to verify/i.test(msg)) return "TLS/证书错误（自签证书不被信任：改用 http 或换正式证书）";
+  if (/ECONNREFUSED/i.test(msg)) return "连接被拒绝（端口没开 / 服务没启动）";
+  if (/ECONNRESET/i.test(msg)) return "连接被重置（中间设备拦截，或该端口不是 HTTP 服务）";
+  if (/EHOSTUNREACH|ENETUNREACH/i.test(msg)) return "网络不可达（IP 不在同一网段，或路由没通）";
+  return msg || "未知错误";
+}
+/** HTTP 状态码 → 人话 */
+function explainProbeStatus(status) {
+  if (status === 401 || status === 403) return `鉴权失败（HTTP ${status}）：密钥不对或没带`;
+  if (status === 404) return "端点不存在（HTTP 404）：该地址上没有这个接口，检查是否少了路径前缀";
+  if (status === 405) return "方法不允许（HTTP 405）：路由在，只是不接受 GET";
+  if (status === 429) return "被限流（HTTP 429）：稍后重试";
+  if (status >= 500) return `上游内部错误（HTTP ${status}）`;
+  if (status >= 400) return `请求被拒（HTTP ${status}）`;
+  return `HTTP ${status}`;
+}
+/** 探测单个端点（**只发 GET**）：返回 { ok, status, ms, count, hint }。
+ *  ⛔ 上游测试与知识库/记忆测试**共用这一份** —— 两处各写一份必然漂移。
+ *  `authHeader`：`"x-api-key"`（WeKnora 租户 API Key）或 `"bearer"`（网关密钥）。 */
+/* ═══ 10-22 移植自 codex-cloud-assistant 1.0.18：模型目录的候选端点 / 多形状解析 / 上游倍率 / 映射 ═══ */
+
+/* 最近一次目录同步失败原因（面板「模型管理」直接显示，不必先点一次同步才知道为什么空）。 */
+
+let lastCatalogError = null;
+
+function modelMapTable() {
+  const m = db && db.upstream && db.upstream.modelMap;
+  return m && typeof m === "object" && !Array.isArray(m) ? m : {};
+}
+
+function mappedFromRow(row) {
+  const r = row || {};
+  const v = r.mapped_model ?? r.mappedModel ?? r.target_model ?? r.targetModel
+    ?? r.upstream_model ?? r.upstreamModel ?? r.mapping_target ?? "";
+  return String(v || "").trim();
+}
+
+function modelLabelFor(id, upstreamName, row) {
+  const key = String(id || "").trim();
+  const auto = mappedFromRow(row);
+  if (auto && auto !== key) return auto;
+  const mapped = modelMapTable()[key];
+  return String(mapped || "").trim() || String(upstreamName || key).trim();
+}
+
+function applyModelMap() {
+  let changed = 0;
+  for (const item of (db.modelCatalog.list || [])) {
+    if (!item || !item.id) continue;
+    if (!item.upstreamName) item.upstreamName = String(item.name || item.id);
+    const next = modelLabelFor(item.id, item.upstreamName);
+    if (item.name !== next) { item.name = next; changed += 1; }
+  }
+  if (changed) persist();
+  return changed;
+}
+
 function splitUpstreamBase(base) {
   const b = String(base || "").trim().replace(/\/+$/, "");
   return { root: b.replace(/\/v1$/i, ""), openai: /\/v1$/i.test(b) ? b : `${b}/v1` };
 }
-/** 模型目录的**候选端点表**（10-22 用户：「适配性强，不要写死，只要 API 地址和密钥填了，
- *  模型目录就要更新并且识别出来」）。
- *
- *  探测与同步**共用这一张表**，按顺序试，谁先给出列表就用谁：
- *    ① 管理目录 `/api/model-catalog`（挂在**根**上，自带倍率）
- *    ② OpenAI 兼容 `/v1/models`（绝大多数中转/网关都有）
- *    ③ 通用 `/models`（少数网关把列表挂在根上）
- *  ⛔ 以后接新协议（Gemini /v1beta/models、Ollama /api/tags …）只往这里加一行，
- *     探测与同步自动跟着走 —— 这就是「不写死」的落点。 */
+
 function catalogCandidates(base) {
   const { root, openai } = splitUpstreamBase(base);
   const list = [
@@ -446,9 +487,16 @@ function catalogCandidates(base) {
   }
   return list;
 }
-/** 按**协议**取模型列表（10-22 用户：「openai 跟 Claude 协议都识别不出来吗」）。
- *  ⛔ 同一个 `/v1/models`：OpenAI 用 `Authorization: Bearer`，Claude 用 `x-api-key + anthropic-version`，
- *     两种头返回的模型集合**不一定相同**（很多网关按头切分组）⇒ 两种都要试、按 id 合并去重。 */
+
+function modelsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return null;
+  const arr = (v) => (Array.isArray(v) ? v : null);
+  return arr(payload.data) || arr(payload.models) || arr(payload.list) || arr(payload.items)
+    || arr(payload.result) || arr(payload.result && payload.result.data) || arr(payload.result && payload.result.models)
+    || arr(payload.data && payload.data.models) || arr(payload.data && payload.data.list) || null;
+}
+
 async function fetchModelsByProtocol(url, key, mode) {
   const headers = !key
     ? {}
@@ -460,12 +508,7 @@ async function fetchModelsByProtocol(url, key, mode) {
   const payload = await res.json().catch(() => null);
   return modelsFromPayload(payload);
 }
-/** 读上游**倍率**（10-22 用户：「WBM 要能识别上游倍率，sub2api 也要」）。
- *  两套常见协议，按顺序试，谁给就用谁：
- *    · New API / one-api：`GET /api/pricing` → `{data:[{model_name, model_ratio, quota_type}]}`（**逐模型**）
- *    · sub2api：`GET /v1/sub2api/billing` → `{effective_rate_multiplier | resolved_rate_multiplier | group_rate_multiplier}`（**账号级**）
- *  ⛔ 逐模型优先于账号级：账号级只在该模型没有单独倍率时兜底；两者都没有就保持空（面板显示"未设倍率/当前免费"），
- *     绝不猜一个默认值（猜错就是多扣钱）。 */
+
 async function readUpstreamRates(base, key) {
   const { root, openai } = splitUpstreamBase(base);
   const headers = key ? { Authorization: `Bearer ${key}` } : {};
@@ -500,78 +543,30 @@ async function readUpstreamRates(base, key) {
   }
   return { perModel, global, source };
 }
-/** 从上游各种「模型列表」形状里取数组（实测存在四种以上，只认 `data` 会把 WBM 漏掉）：
- *  顶层数组 / `{data:[]}` / `{models:[]}` / `{list:[]}` / `{items:[]}` / `{result:[]}` /
- *  `{result:{data:[]}}` / `{data:{models:[]}}`。取不到就返回 null（由调用方给原因）。 */
-function modelsFromPayload(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== "object") return null;
-  const arr = (v) => (Array.isArray(v) ? v : null);
-  return arr(payload.data) || arr(payload.models) || arr(payload.list) || arr(payload.items)
-    || arr(payload.result) || arr(payload.result && payload.result.data) || arr(payload.result && payload.result.models)
-    || arr(payload.data && payload.data.models) || arr(payload.data && payload.data.list) || null;
-}
-/** 把 fetch 的异常翻译成人话（面板直接显示，管理员不必去翻服务器日志） */
-function classifyFetchError(error) {
-  const msg = String((error && (error.name + ": " + error.message)) || error || "");
-  if (/TimeoutError|AbortError|timed? ?out/i.test(msg)) return "超时（8 秒内无响应：地址/端口不对，或被防火墙拦了）";
-  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(msg)) return "DNS 解析失败（域名拼错，或这台服务器没有可用 DNS）";
-  if (/CERT|SSL|TLS|self.signed|unable to verify/i.test(msg)) return "TLS/证书错误（自签证书不被信任：改用 http 或换正式证书）";
-  if (/ECONNREFUSED/i.test(msg)) return "连接被拒绝（端口没开 / 服务没启动）";
-  if (/ECONNRESET/i.test(msg)) return "连接被重置（中间设备拦截，或该端口不是 HTTP 服务）";
-  if (/EHOSTUNREACH|ENETUNREACH/i.test(msg)) return "网络不可达（IP 不在同一网段，或路由没通）";
-  return msg || "未知错误";
-}
-/** HTTP 状态码 → 人话 */
-function explainProbeStatus(status) {
-  if (status === 401 || status === 403) return `鉴权失败（HTTP ${status}）：密钥不对或没带`;
-  if (status === 404) return "端点不存在（HTTP 404）：该地址上没有这个接口，检查是否少了路径前缀";
-  if (status === 405) return "方法不允许（HTTP 405）：路由在，只是不接受 GET";
-  if (status === 429) return "被限流（HTTP 429）：稍后重试";
-  if (status >= 500) return `上游内部错误（HTTP ${status}）`;
-  if (status >= 400) return `请求被拒（HTTP ${status}）`;
-  return `HTTP ${status}`;
-}
-/** 探测单个端点（**只发 GET**）：返回 { ok, status, ms, count, hint }。
- *  ⛔ 上游测试与知识库/记忆测试**共用这一份** —— 两处各写一份必然漂移。
- *  `authHeader`：`"x-api-key"`（WeKnora 租户 API Key）或 `"bearer"`（网关密钥）。 */
+
 async function probeGet(base, probe, key, authHeader) {
   const t0 = Date.now();
   const headers = key
-    ? (authHeader === "x-api-key"
-      ? { "X-API-Key": key }
-      : probe.authMode === "anthropic"
-        ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
-        : { Authorization: `Bearer ${key}` })
+    ? (authHeader === "x-api-key" ? { "X-API-Key": key } : { Authorization: `Bearer ${key}` })
     : {};
   try {
-    /* ⛔ probe.url：目录类探测直接给**整条 URL**（不同端点挂在不同基址上，
-       拿 base+path 拼容易拼错）；其余探测仍走 base+path。 */
-    const target = probe.url || (String(probe.base || base).replace(/\/+$/, "") + probe.path);
-    const r = await fetch(target, { headers, signal: AbortSignal.timeout(8000) });
+    const r = await fetch(base + probe.path, { headers, signal: AbortSignal.timeout(8000) });
     const text = await r.text().catch(() => "");
     let count = null;
     try {
       const j = JSON.parse(text);
-      const rows = modelsFromPayload(j);
-      if (rows) count = rows.length;
+      if (Array.isArray(j && j.data)) count = j.data.length;         // OpenAI 形状
+      else if (Array.isArray(j && j.list)) count = j.list.length;     // WBM 形状
+      else if (Array.isArray(j && j.models)) count = j.models.length;
+      else if (Array.isArray(j && j.items)) count = j.items.length;
     } catch { /* 非 JSON 不致命：能连通但格式不认 */ }
-    /* 10-22 部署现场：管理员把**控制台地址**当 API 填进来，浏览器跟随 302 到 /login 后拿到 HTML，
-       之前只能笼统说「不是模型列表」。这里把「跳转过」「返回是网页」两种证据单独带出来，
-       面板才能直接说「这是控制台，不是 API 地址」。 */
-    const contentType = String(r.headers.get("content-type") || "");
-    const html = /text\/html|application\/xhtml/i.test(contentType) || /^\s*<(!doctype|html)/i.test(text.slice(0, 200));
     return {
-      name: probe.name, path: probe.path, optional: Boolean(probe.optional), ok: r.ok, status: r.status,
-      ms: Date.now() - t0, count, html, redirected: Boolean(r.redirected), finalUrl: r.url || target,
-      hint: r.ok
-        ? (count == null && probe.wantList
-          ? (html ? "能连通，但返回的是网页（控制台 / 登录页），不是模型 API" : "能连通，但返回的不是模型列表")
-          : "")
-        : explainProbeStatus(r.status),
+      name: probe.name, path: probe.path, ok: r.ok, status: r.status,
+      ms: Date.now() - t0, count,
+      hint: r.ok ? (count == null && probe.wantList ? "能连通，但没解析出列表（端点存在、格式不同）" : "") : explainProbeStatus(r.status),
     };
   } catch (error) {
-    return { name: probe.name, path: probe.path, optional: Boolean(probe.optional), ok: false, status: 0, ms: Date.now() - t0, count: null, hint: classifyFetchError(error) };
+    return { name: probe.name, path: probe.path, ok: false, status: 0, ms: Date.now() - t0, count: null, hint: classifyFetchError(error) };
   }
 }
 /** 一组探测里挑"最好的那个"：有模型数的优先，其次能连通的 */
@@ -582,21 +577,13 @@ function bestProbe(results) {
 const BUILTIN_PROXY_PATH = "/cloud-api/proxy/v1";
 /** 模型目录缓存时长（WBM 自己也有 5 分钟缓存；这里更宽，避免频繁拉） */
 const MODEL_SYNC_TTL_MS = 30 * 60_000;
-/* 10-22：最近一次目录同步失败原因 —— 管理员打开「模型管理」时直接显示，
-   不必先点一次「重新同步」才知道为什么是空的。成功即清空。 */
-let lastCatalogError = null;
 /* 目录里要**剔除**的模型 id：`auto` 由上游自动挑选模型，记账无法判断实际用了哪个
    （用户令「把 auto 模型去了，那个不好判断用了哪个模型」）。以后要屏蔽别的模型往这里加。 */
 const EXCLUDED_CATALOG_IDS = new Set(["auto"]);
 /** 内置供应商在客户端的稳定 id 与展示名 */
 const BUILTIN_PROVIDER_ID = "limited-benefit";
 const BUILTIN_PROVIDER_NAME = "限时福利";
-/* ⛔⛔ 分发包：默认**为空**（不写死作者域名）。
-   空 ⇒ 浏览器带 Origin 的请求会被下面的校验拒绝（非浏览器/同源无 Origin 的不受影响）。
-   ⇒ 部署时**必须**配 HARNESS_ACCOUNTS_ORIGINS（见 config.example.env），否则面板登录会 403。
-   `.filter(Boolean)`：避免 `"".split(",")` 产生 `[""]` 让 `includes()` 行为变得莫名其妙。 */
-const ALLOWED_ORIGINS = (process.env.HARNESS_ACCOUNTS_ORIGINS || "")
-  .split(",").map((s) => s.trim()).filter(Boolean);
+const ALLOWED_ORIGINS = (process.env.HARNESS_ACCOUNTS_ORIGINS || "https://ppz123.asia,https://www.ppz123.asia").split(",");
 const SESSION_TTL_MS = 7 * 24 * 3600_000;
 
 /* ── 存储（原子写 + 600 权限）────────────────────────────────────────────── */
@@ -847,6 +834,15 @@ const PROXY_IP_LIMIT = 1;
    表现是记忆恒 401 invalid-proxy-token）。有环之后旧副本在若干轮内仍可用 ⇒ 能自愈。
    ⛔ 环只影响"还能不能用"，**不影响来源绑定**（ips 仍属同一条记录、同一套规则）。 */
 const PROXY_TOKEN_RING = Math.max(1, Math.min(10, Number(process.env.HARNESS_PROXY_TOKEN_RING || 3) || 3));
+/* 10-20 用户令「自动同步到应用上，别老让我改」：给代理通道一把**永不轮换**的内部钥匙。
+   ⛔ 为什么需要：用户令牌（wap_…）明文只在签发时返回一次、库里只存 sha256，
+     而网关配置（proxy-config.yaml 的 upstream.apiKey）是快照 ⇒ 用户每重签一次就可能失配，
+     表现为 401 invalid-proxy-token。令牌环只能缓解，不能根治。
+   ⛔ 这把钥匙固定写在网关配置里，不参与用户令牌轮换 ⇒ 一次配置永久有效。
+   ⛔ 不设默认值：未配置时本分支完全不生效（退回原来的纯用户令牌校验）。
+   ⛔ 归属账号由 HARNESS_INTERNAL_PROXY_OWNER 指定（默认 admin），决定计费/配额记在谁名下。 */
+const INTERNAL_PROXY_KEY = String(process.env.HARNESS_INTERNAL_PROXY_KEY || "").trim();
+const INTERNAL_PROXY_OWNER = String(process.env.HARNESS_INTERNAL_PROXY_OWNER || "admin").trim();
 function pushRing(row, ring) {
   if (!row) return [];
   const list = Array.isArray(row.prevHashes) ? row.prevHashes.slice() : [];
@@ -866,6 +862,24 @@ function proxyUserByToken(t) {
     if (Array.isArray(row.prevHashes) && row.prevHashes.some((p) => p && p.hash === h)) return { username, row, viaRing: true };
   }
   return null;
+}
+/** 内部网关请求的真实用户还原（10-20）：
+ *  MEMHUB 会透传客户端带来的 `X-Tdai-User-Key`（每个账号一支记忆 key），
+ *  用它把「内部服务账号」的模型请求归到真正发起对话的用户，再按该用户的
+ *  `userModels` 鉴权、按该用户扣积分。⛔ 只对内部钥匙生效：普通用户令牌
+ *  即使带同名头也一律忽略，避免拿别人的记忆 key 越权。找不到映射则保持
+ *  内部钥匙的归属账号（旧行为）。 */
+function usernameByMemoryKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return "";
+  let found = "";
+  for (const [username, slot] of Object.entries(db.integrations || {})) {
+    if (!slot || String(slot.memKey || "").trim() !== k) continue;
+    /* ⛔ 同一把 memKey 命中多个账号 = 数据异常：宁可判无效，也不能随机挑一个归属。 */
+    if (found) return "";
+    found = username;
+  }
+  return found;
 }
 const DEVICE_CODE_RE = /^[0-9a-f]{8}$/;
 /** 服务端密钥（HMAC 派生设备 token 用）：首次运行自动生成并落盘（0600）。
@@ -893,6 +907,17 @@ function deviceIdOf(codeHash) { return codeHash.slice(0, 8); }
 /* ── 云端同步存储（P0：会话上传 + 索引；按账号分目录落盘） ─────────────────
    布局：<SYNC_DIR>/<username>/sessions/<sessionId>.jsonl  +  <SYNC_DIR>/<username>/index.json
    ⛔ 与本地 rollout 同构（逐行可比）；索引只存元数据（标题/项目/机器/时间/字节数/行数）。 */
+/** 会话 id 归一化（10-18 安全修复）。
+ *  ⛔⛔ 必须过滤：客户端可传 `../../data` 之类，`path.join` 会**把它规范化成越界路径**
+ *      ⇒ 登录用户就能读写 sync 根之外的文件。
+ *  ⛔ 只允许 [A-Za-z0-9_.-]，并显式拒绝 `/` `\\` `..`；返回空串 = 非法，调用方必须拒绝。 */
+function syncId(raw) {
+  const s = String(raw == null ? "" : raw).trim();
+  if (!s || s.includes("/") || s.includes("\\") || s.includes("..")) return "";
+  const clean = s.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 128);
+  if (!clean || clean === ".") return "";
+  return clean;
+}
 function syncUserDir(username) { return path.join(SYNC_DIR, String(username || "unknown").replace(/[^A-Za-z0-9_.-]/g, "_")); }
 function syncIndexFile(username) { return path.join(syncUserDir(username), "index.json"); }
 function readSyncIndex(username) {
@@ -911,11 +936,58 @@ function syncUsageBytes(username) {
   for (const row of Object.values(index)) total += Number(row && row.sizeBytes || 0);
   return total;
 }
+/** 登录即登记本机（10-18 用户令：「现在直接云账户登录本机，云管理那边是没有新增设备的」）。
+ *  ⛔ 与**配对设备**的区别：
+ *     · 配对设备 = 有 device token，可独立鉴权（`syncAuth` 第 ① 分支）；
+ *     · 登录设备 = 只记录"这台机器登过"，鉴权仍走账号会话（第 ② 分支）。
+ *     两者用 `via` 字段区分（`pair` / `login`），UI 打不同标记。
+ *  ⛔ 同一台机器恒一条（按 machineId 去重）；若该机器已有配对记录则只 touch，不重复建行。
+ *  ⛔ 仍受 DEVICE_LIMIT 限制 —— 超限就不记，并如实返回原因。 */
+function registerLoginDevice(username, machineId, name) {
+  const mid = String(machineId || "").trim().slice(0, 64);
+  if (!mid) return { ok: false, reason: "no-machine-id" };
+  /* 同机已有配对记录 ⇒ 只更新 lastSeen（不建第二行） */
+  const paired = Object.entries(db.devices).find(([, d]) => d.username === username && d.machineId === mid);
+  if (paired) {
+    paired[1].lastSeen = Date.now();
+    if (name) paired[1].name = String(name).trim().slice(0, 32);
+    return { ok: true, linked: true };
+  }
+  const key = "login:" + crypto.createHash("sha256").update(mid).digest("hex").slice(0, 24);
+  const prev = db.devices[key];
+  if (prev) {
+    if (prev.username !== username) return { ok: false, reason: "machine-bound-to-other-account" };
+    prev.lastSeen = Date.now();
+    if (name) prev.name = String(name).trim().slice(0, 32);
+    return { ok: true, updated: true };
+  }
+  const count = Object.values(db.devices).filter((d) => d.username === username).length;
+  if (count >= DEVICE_LIMIT) return { ok: false, reason: "device-limit", limit: DEVICE_LIMIT };
+  db.devices[key] = {
+    username,
+    name: String(name || "").trim().slice(0, 32) || "登录设备",
+    code: "",
+    machineId: mid,
+    tokenHash: "",
+    via: "login",
+    claimedAt: Date.now(),
+    lastSeen: Date.now(),
+  };
+  return { ok: true, created: true };
+}
 function listDevices(username) {
   const out = [];
   for (const [hash, device] of Object.entries(db.devices)) {
     if (device.username !== username) continue;
-    out.push({ id: deviceIdOf(hash), name: device.name, claimedAt: device.claimedAt, lastSeen: device.lastSeen || 0 });
+    out.push({
+      id: deviceIdOf(hash),
+      name: device.name,
+      claimedAt: device.claimedAt,
+      lastSeen: device.lastSeen || 0,
+      /* ⛔ 10-18：`via` 让前端区分「配对」与「仅登录」；machineId 只给前 8 位用于辨认，不当凭据 */
+      via: device.via || "pair",
+      machineId: device.machineId ? device.machineId.slice(0, 8) : "",
+    });
   }
   return out.sort((a, b) => b.claimedAt - a.claimedAt);
 }
@@ -1094,8 +1166,9 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   const p = url.pathname.replace(/\/+$/, "") || "/";
   const send = (status, body) => { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...cors }); res.end(JSON.stringify(body)); };
-  /* ── 版本与更新（10-18 用户令）────────────────────────────────────────────
-     ⛔⛔ 必须放在 `send` 之后 —— 放前面会踩 const TDZ，handler 抛错、连接被断，curl 只看到空响应。
+  /* ── 版本与更新（10-18 用户令「云端管理加一个更新功能」）────────────────
+     ⛔⛔ 必须放在 `send` 定义**之后** —— 放前面会踩 `const` 暂时性死区（TDZ），
+        handler 抛 ReferenceError、连接直接断，`curl` 只看到空响应（实测踩过）。
      ⛔ **公开**端点（无需鉴权）：面板、运维脚本、监控都要能读到当前版本。
      ⛔ 只回版本与仓地址，**不回**任何配置/密钥/路径。 */
   if (p === "/api/version" && req.method === "GET") {
@@ -1103,41 +1176,168 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       name: "codex-cloud-assistant",
       version: APP_VERSION,
-      repo: REPO_URL,
-      deployRepo: REPO_URL,
+      repo: DEPLOY_REPO,
+      deployRepo: DEPLOY_REPO,
+      /* ⛔ 该跟谁比版本（主站比云助手仓、分发包比自己的仓）—— 面板据此显示正确的"最新版" */
+      updateRepo: UPDATE_REPO,
+      updateRepoUrl: UPDATE_REPO_URL,
       uptimeSec: Math.round(process.uptime()),
       node: process.version,
     });
   }
-  /* ── 检查更新（国内镜像优先）─────────────────────────────────────────────
-     ⛔ 不在浏览器里查 GitHub（匿名 API 60/h/IP，超了 403；国内还常连不上）。
-     服务端按「国内镜像 → 直连」顺序读 raw 的 VERSION（不占 API 配额）。 */
+  /* ── 站点图标（10-18 用户令「做成自定义图标，管理员可以上传改这个图标，默认现在的可以」）──
+     ⛔ 设计取舍：
+        · 存储放 `<data 目录>/branding/favicon.<ext>` —— 与 data.json 同级，
+          ⛔ 不放 web 目录：那样会被 selfupdate 的覆盖流程当成"自己的文件"管起来。
+        · `GET /api/favicon` 是**公开**端点：有自定义就发自定义，否则发内置默认
+          （`HARNESS_WEB_DIR/favicon-32.png`）⇒ 前端只需一个 link，永远有内容、不用 onerror 兜底。
+        · `POST /admin/favicon` 收 **base64**（不解析 multipart，省一个依赖）；
+          校验类型白名单 + ≤512KB，文件名固定 `favicon.<ext>`，⛔ 绝不按客户端文件名落盘。
+     · `DELETE /admin/favicon` 恢复默认。 */
+  if (p === "/api/favicon" && req.method === "GET") {
+    const dir = path.join(path.dirname(DATA_FILE), "branding");
+    const custom = ["png", "jpeg", "svg"].map((e) => path.join(dir, "favicon." + e)).find((f) => { try { return fs.existsSync(f); } catch { return false; } });
+    const builtin = path.join(String(process.env.HARNESS_WEB_DIR || "/var/www/codex-harness-cloud"), "favicon-32.png");
+    const file = custom || builtin;
+    try {
+      const buf = fs.readFileSync(file);
+      const mime = file.endsWith(".svg") ? "image/svg+xml" : file.endsWith(".jpeg") ? "image/jpeg" : "image/png";
+      /* 自定义图标缓存 5 分钟便于管理员改完即时生效；默认图标可长缓存 */
+      res.writeHead(200, { "Content-Type": mime, "Cache-Control": custom ? "public, max-age=300" : "public, max-age=86400" });
+      res.end(buf);
+    } catch {
+      send(404, { ok: false, error: "favicon-missing" });
+    }
+    return;
+  }
+  if (p === "/admin/favicon" && req.method === "POST") {
+    if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+    const body = await readBodyLarge(2 * 1024 * 1024);
+    const data = String((body && body.data) || "");
+    const m = /^data:image\/(png|jpeg|svg\+xml);base64,([A-Za-z0-9+/=]+)$/.exec(data);
+    if (!m) return send(400, { ok: false, error: "格式不对：请上传 PNG/JPEG/SVG 的 base64 data URL" });
+    const ext = m[1] === "svg+xml" ? "svg" : m[1];
+    const buf = Buffer.from(m[2], "base64");
+    if (!buf.length) return send(400, { ok: false, error: "内容为空" });
+    if (buf.length > 512 * 1024) return send(400, { ok: false, error: "图标过大（上限 512KB）" });
+    /* ⛔ 固定文件名 + 白名单扩展名：绝不使用客户端给的文件名（路径穿越） */
+    const dir = path.join(path.dirname(DATA_FILE), "branding");
+    fs.mkdirSync(dir, { recursive: true });
+    for (const e of ["png", "jpeg", "svg"]) { try { fs.rmSync(path.join(dir, "favicon." + e), { force: true }); } catch { /* 忽略 */ } }
+    fs.writeFileSync(path.join(dir, "favicon." + ext), buf, { mode: 0o644 });
+    console.log(`[branding] ${me.username} 上传站点图标（${ext}, ${buf.length} B）`);
+    return send(200, { ok: true, ext, bytes: buf.length });
+  }
+  if (p === "/admin/favicon" && req.method === "DELETE") {
+    if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+    const dir = path.join(path.dirname(DATA_FILE), "branding");
+    for (const e of ["png", "jpeg", "svg"]) { try { fs.rmSync(path.join(dir, "favicon." + e), { force: true }); } catch { /* 忽略 */ } }
+    console.log(`[branding] ${me.username} 恢复默认站点图标`);
+    return send(200, { ok: true });
+  }
+  /* ── 检查更新（10-18 用户令「加上国内镜像更新」）──────────────────────────
+     ⛔ 为什么不在浏览器里查 GitHub：
+        ① 匿名 API 限 **60 次/小时/IP**，超了就是 **403** —— 很容易被误读成"被墙"
+           （实测：面板点「检查更新」直接 403，提示语也写错了）；
+        ② 国内浏览器直连 github.com / api.github.com 经常超时。
+     ⇒ 由**服务端**依次试「直连 + 国内镜像」的 **raw 文件**：raw 不计 API 配额，
+        镜像只做透传。⛔ 只读一个 VERSION 文本，不拉代码、不执行任何东西。 */
+  /* ── 应用更新并重启（10-18 用户令「加自动更新重启，方便用户那边自动更新」）──
+     ⛔ 不自己 spawn 新进程（会出现两个实例抢 data.json）：调 selfupdate.sh 覆盖文件后
+       `process.exit(0)`，由 systemd 的 `Restart=always` 拉起。这是唯一安全的自我更新方式。
+     ⛔ 先回响应再退出，否则客户端只看到"连接被重置"。⛔ 仅 admin。 */
+  /* 更新进度（前端轮询）：只回最近一次 apply 的状态，⛔ 不暴露脚本全文 */
+  /* ── 应用连接地址（10-18 用户令「用户管理里加应用连接的 api 地址 + 复制，部署完自动生成」）──
+     ⛔ **不硬编码域名**：从当前请求的 host / x-forwarded-proto 推出来 —— 换域名、上 HTTPS、
+       反代前缀改了，这里都自动跟着变，不需要改代码重新部署。 */
+  if (p === "/api/app-endpoint" && req.method === "GET") {
+    /* ⛔ 这一段在 `const me = sessionUser(req)` **之前**（公开路由区）——
+       此处引用 me 会 ReferenceError 并把进程打挂（实测：每次请求 502 一次）。
+       地址本身不是秘密（登录页域名就能看出来），不做 admin 校验。 */
+    return send(200, { ok: true, apiBase: publicBaseOf(req), host: String(req.headers["x-forwarded-host"] || req.headers.host || "") });
+  }
+
+  if (p === "/api/updates/progress" && req.method === "GET") {
+    const g = db.updateProgress || null;
+    return send(200, { ok: true, progress: g ? { pct: g.pct || 0, label: g.label || "", done: Boolean(g.done), at: g.at || 0, error: g.error || "" } : null, version: APP_VERSION });
+  }
+
+  if (p === "/api/updates/apply" && req.method === "POST") {
+    if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+    const script = [path.join(__dirname, "selfupdate.sh"), path.join(__dirname, "..", "selfupdate.sh")].find((f) => { try { return fs.existsSync(f); } catch { return false; } });
+    if (!script) return send(400, { ok: false, error: "找不到 selfupdate.sh —— 这个部署方式不支持应用内更新" });
+    /* ⛔ 用 spawn 而不是 execFile：要**流式**拿每一行输出，才能把进度推给前端。
+       阶段映射（不精确到字节，但足以让用户知道在干什么）：
+         采用最高版本 → 10% · 每个 ✓ 文件 → 递增至 80% · VERSION → 92% · 即将重启 → 100% */
+    const { spawn } = require("node:child_process");
+    db.updateProgress = { pct: 5, label: "准备中…", at: Date.now(), done: false };
+    persist();
+    const child = spawn("bash", [script, "--no-restart"], { cwd: path.dirname(script) });
+    let done = 0, total = 8, tail = [];
+    const bump = (label, pct) => { db.updateProgress = { pct, label, at: Date.now(), done: false }; };
+    const onLine = (line) => {
+      if (!line.trim()) return;
+      tail.push(line); if (tail.length > 14) tail.shift();
+      if (/采用最高版本/.test(line)) bump("已获取最新版本，开始下载…", 10);
+      else if (/✓/.test(line)) { done += 1; bump(`下载并校验 ${done}/${total}…`, Math.min(80, 10 + Math.round((done / total) * 70))); }
+      else if (/VERSION →/.test(line)) bump("写入完成，准备重启…", 92);
+    };
+    let buf = "";
+    child.stdout.on("data", (d) => { buf += d.toString(); const parts = buf.split("\n"); buf = parts.pop(); parts.forEach(onLine); });
+    child.stderr.on("data", (d) => { buf += d.toString(); });
+    child.on("close", (code) => {
+      if (buf) onLine(buf);
+      if (code !== 0) {
+        db.updateProgress = { pct: 0, label: "更新失败", at: Date.now(), done: true, error: tail.slice(-6).join("\n") };
+        persist();
+        return send(500, { ok: false, error: `selfupdate 退出码 ${code}`, log: tail.join("\n") });
+      }
+      db.updateProgress = { pct: 100, label: "更新完成，正在重启…", at: Date.now(), done: true };
+      persist();
+      send(200, { ok: true, log: tail.join("\n"), restarting: true });
+      console.log(`[update] ${me.username} 触发应用更新，即将退出交给 systemd`);
+      setTimeout(() => process.exit(0), 1200);
+    });
+    return;
+  }
+
   if (p === "/api/updates" && req.method === "GET") {
-    const rawUrl = REPO_URL.replace("https://github.com/", "https://raw.githubusercontent.com/") + "/main/VERSION";
+    const rawUrl = UPDATE_REPO_URL.replace("https://github.com/", "https://raw.githubusercontent.com/") + "/main/" + UPDATE_VERSION_PATH;
     const probeOne = async (m) => {
       const t0 = Date.now();
       try {
+        /* ⛔ 带时间戳 query：镜像/CDN 会缓存 raw 文件，不加更容易读到上一版 */
         const r = await fetch(m.prefix + rawUrl + "?t=" + Date.now(), { signal: AbortSignal.timeout(6000), headers: { "Cache-Control": "no-cache" } });
         const text = r.ok ? (await r.text()).trim() : "";
-        const latest = (text.match(/^v?\d+\.\d+\.\d+/) || [])[0] || "";
+        /* ⛔ 清单是 JSON（取 `version`）；分发包的 VERSION 是纯文本 ⇒ 先按 JSON 试，失败回落文本 */
+        const latest = (() => {
+          if (!text) return "";
+          try {
+            const j = JSON.parse(text);
+            if (j && j.version) return String(j.version).trim().replace(/^v/, "");
+          } catch { /* 不是 JSON：按纯文本处理 */ }
+          return ((text.match(/^v?\d+\.\d+\.\d+/) || [])[0] || "").replace(/^v/, "");
+        })();
         return { name: m.name, ok: Boolean(latest), status: r.status, ms: Date.now() - t0, latest, error: latest ? "" : explainProbeStatus(r.status) };
       } catch (error) {
         return { name: m.name, ok: false, status: 0, ms: Date.now() - t0, latest: "", error: classifyFetchError(error) };
       }
     };
-    /* ⛔⛔ 并行问所有源、**取最高版本** —— 不能"第一个成功就返回"：
-       镜像缓存滞后会给出旧版本（实测 ghfast 返旧值，gh-proxy 才是最新）。 */
+    /* ⛔⛔ **并行问所有源、取最高版本** —— 不能"第一个成功就返回"：
+       镜像缓存滞后会给出**旧**版本（实测：ghfast 返 1.0.2，而 gh-proxy 与直连已是 1.0.3）。
+       总耗时 ≈ 最慢那个（≤6s），比"问到旧版就停"正确得多。 */
     const tried = await Promise.all(UPDATE_MIRRORS.map(probeOne));
     const good = tried.filter((t) => t.ok);
     if (!good.length) {
-      return send(200, { ok: false, current: APP_VERSION, tried, repo: REPO_URL, message: "所有源都失败（含国内镜像）—— 直接打开仓库页看最新 tag" });
+      return send(200, { ok: false, current: APP_VERSION, tried, repo: DEPLOY_REPO, message: "所有源都失败（含国内镜像）—— 直接打开仓库页看最新 tag" });
     }
     const best = good.reduce((a, b) => (cmpVersion(b.latest, a.latest) > 0 ? b : a));
     return send(200, {
       ok: true, current: APP_VERSION,
       latest: best.latest, source: best.name,
+      /* 各源分别读到什么，面板可据此发现"某个镜像滞后" */
       sources: good.map((x) => `${x.name}=${x.latest}`),
-      tried, repo: REPO_URL,
+      tried, repo: DEPLOY_REPO,
     });
   }
   const readBody = () => new Promise((resolve, reject) => {
@@ -1182,6 +1382,12 @@ const server = http.createServer(async (req, res) => {
       if (!usernameOk(username)) return send(400, { ok: false, error: "用户名需 3~24 位字母/数字/下划线/连字符" });
       if (!passwordOk(body.password)) return send(400, { ok: false, error: "密码至少 8 位" });
       if (db.users.some((u) => u.username === username)) return send(409, { ok: false, error: "用户名已被占用" });
+      /* ⛔⛔ 10-19（清单 3）：用户名**大小写不敏感**去重 —— 服务端的查找是 `===`，
+         放行 `PPZ11` 会产生与 `pzm11` 并列的第二个账号 ⇒「订阅在 A、应用登 B」的错位
+         （实测：同一个人被分成两个账号，重签落在另一个账号上、本机 key 永不更新）。 */
+      if (db.users.some((u) => String(u.username).toLowerCase() === username.toLowerCase())) {
+        return send(409, { ok: false, error: "用户名已被占用（不区分大小写，请直接用原账号登录）" });
+      }
       const user = makeUser(username, body.password, "user");
       /* 来源指针（"" = 主码或无邀请；历史账号也是 ""）。⛔ 只存码，不存整个码对象。 */
       user.inviteCode = invite ? invite.code : "";
@@ -1200,7 +1406,13 @@ const server = http.createServer(async (req, res) => {
       }
       persist();
       console.log(`[points] 新用户 ${username} 注册，赠送 ${SIGNUP_GRANT} 积分（本 IP 累计 ${db.registerIps[ip]}/${REGISTER_MAX_PER_IP}）`);
-      return send(200, { ok: true, token: issueSession(username), account: publicView(user), points: { balance: pointsOf(username).balance, granted: SIGNUP_GRANT } });
+
+      /* 10-19 用户要求：注册后**自动**建好该账号的独立知识库与记忆空间。
+         ⛔ 用 provisionFor（fire-and-forget + 幂等 + 失败只记日志），绝不 await ——
+            远端建库 1~3 秒，等它就是让「注册」按钮转圈。
+         ⛔ 所有消费入口（/integrations、/kb/*）仍会再调 ensure*，这里只是提前预热。 */
+      provisionFor(username, "knowledge");
+      provisionFor(username, "memory");      return send(200, { ok: true, token: issueSession(username), account: publicView(user), points: { balance: pointsOf(username).balance, granted: SIGNUP_GRANT } });
     }
 
     /* 登录 */
@@ -1208,7 +1420,14 @@ const server = http.createServer(async (req, res) => {
       if (!rateLimit(`login-ip:${ip}`, 10, 5 * 60_000)) return send(429, { ok: false, error: "尝试过多，请几分钟后再来" });
       const body = await readBody();
       const username = String(body.username || "").trim();
-      const user = db.users.find((u) => u.username === username);
+      /* ⛔ 10-19（清单 3）：精确匹配优先；没有则**唯一**的大小写不敏感匹配
+         （老数据里可能已有 `pzm11` / `PPZ11` 两个变体 —— 有歧义时不做猜测，仍按"用户名或密码不对"拒绝）。 */
+      const user = db.users.find((u) => u.username === username)
+        || (() => {
+          const lower = username.toLowerCase();
+          const hits = db.users.filter((u) => String(u.username).toLowerCase() === lower);
+          return hits.length === 1 ? hits[0] : null;
+        })();
       if (!user) return send(401, { ok: false, error: "用户名或密码不对" });
       if (user.disabled) return send(403, { ok: false, error: "该账号已被停用，联系管理员" });
       if (Date.now() < user.lockUntil) return send(429, { ok: false, error: "该账号已被临时锁定，稍后再试" });
@@ -1216,12 +1435,23 @@ const server = http.createServer(async (req, res) => {
         user.lockUntil = Date.now() + 15 * 60_000; persist();
         return send(429, { ok: false, error: "失败次数过多，账号锁定 15 分钟" });
       }
+      const accountName = user.username;   // ⛔ 大小写回退命中时以存储名为准（session/设备/积分都按它查）
       if (!verifyPassword(user, body.password)) {
         user.failCount = (user.failCount || 0) + 1; persist();
         return send(401, { ok: false, error: "用户名或密码不对" });
       }
       user.failCount = 0; user.lastLogin = Date.now(); persist();
-      return send(200, { ok: true, token: issueSession(username), account: publicView(user), server: { baseUrl: publicBaseOf(req) } });
+      /* 10-18 设备管理：登录即登记本机（否则云端「已配对设备」永远是 0）。
+         ⛔ 登记失败不阻断登录 —— 设备上限/缺 machineId 都不该让人登不进来。 */
+      const reg = (() => { try { return registerLoginDevice(accountName, body.machineId, body.machineName); } catch { return { ok: false, reason: "exception" }; } })();
+      if (reg.ok) persist();
+      return send(200, {
+        ok: true,
+        token: issueSession(username),
+        account: publicView(user),
+        server: { baseUrl: publicBaseOf(req) },
+        device: { registered: Boolean(reg.ok), created: Boolean(reg.created), reason: reg.ok ? "" : reg.reason },
+      });
     }
 
     /* 以下都要会话 */
@@ -1430,10 +1660,9 @@ const server = http.createServer(async (req, res) => {
       return out;
     }
 
-    /* 按候选端点表取「模型行」（10-22 抽出）：
-       先按**根**拉管理目录，再按 `/v1` 拉 OpenAI 列表，最后用 Anthropic 头再取一次按 id 合并。
-       ⛔ 不落盘、不过滤 —— 「同步目录」与「聊天测试的模型候选」共用同一份取数，避免两处漂移。
-       返回 { rows, source, payload, tried }；rows 为 null ⇒ 一个都没拿到（tried 是逐条原因）。 */
+    /* ── 模型目录同步（WBM → 本服务）────────────────────────────────────────────
+       拉 WBM /api/model-catalog，归一化成客户端要的字段；credits（积分倍率）原样保留 ——
+       ⛔ 倍率是"消耗速度随模型而定"的**唯一真相源**，本服务只转发不重写。 */
     async function collectCatalogRows(base, authKey) {
       const headers = authKey ? { Authorization: `Bearer ${authKey}` } : {};
       const tried = [];
@@ -1468,9 +1697,6 @@ const server = http.createServer(async (req, res) => {
       return { rows, source, payload, tried };
     }
 
-    /* ── 模型目录同步（WBM → 本服务）────────────────────────────────────────────
-       拉 WBM /api/model-catalog，归一化成客户端要的字段；credits（积分倍率）原样保留 ——
-       ⛔ 倍率是"消耗速度随模型而定"的**唯一真相源**，本服务只转发不重写。 */
     async function pullModelCatalog(force = false) {
       /* ⛔ 10-22 用户：「我都换了，没有自动跟随更新」——缓存只按时间算：换上游地址后 30 分钟内
          仍命中旧缓存 ⇒ 永远不同步新地址。fresh 必须同时要求「目录来自当前这个上游」。 */
@@ -1611,6 +1837,14 @@ const server = http.createServer(async (req, res) => {
       if (me) return { username: me.username, machineId: "", device: null };
       return null;
     }
+    /* ── 会话同步总闸（10-18 用户令「加一个管理员可以开关功能，关闭后用户就不能同步会话」）──
+       ⛔ 语义：`db.features.sessionSync === false` 才算关闭 —— **默认开**，不改变既有行为。
+       ⛔ 关闭后 `/sync/*` 五个接口一律 403，并回明确的 `session-sync-disabled`（客户端据此显示"已关闭"，
+          而不是当成网络故障去重试）。
+       ⛔ 只拦"同步"，**不拦登录/积分/模型**：关了同步用户照样能用模型。 */
+    if (p.startsWith("/sync/") && db.features && db.features.sessionSync === false) {
+      return send(403, { ok: false, error: "session-sync-disabled", message: "管理员已关闭云端会话同步" });
+    }
     if (p === "/sync/usage" && req.method === "GET") {
       const who = syncAuth();
       if (!who) return send(401, { ok: false, error: "unauthorized" });
@@ -1636,7 +1870,8 @@ const server = http.createServer(async (req, res) => {
     if (p === "/sync/session" && req.method === "GET") {
       const who = syncAuth();
       if (!who) return send(401, { ok: false, error: "unauthorized" });
-      const id = String(url.searchParams.get("id") || "").trim();
+      const id = syncId(url.searchParams.get("id"));
+      if (!id) return send(400, { ok: false, error: "bad-id" });
       const index = readSyncIndex(who.username);
       const row = index[id];
       if (!row) return send(404, { ok: false, error: "not-found" });
@@ -1648,14 +1883,19 @@ const server = http.createServer(async (req, res) => {
     if (p === "/sync/push" && req.method === "POST") {
       const who = syncAuth();
       if (!who) return send(401, { ok: false, error: "unauthorized" });
-      if (!who.device) return send(403, { ok: false, error: "device-token-required" });
+      /* ⛔ 10-18（用户拍板方案 A）：device token 由「必需」改为「可选」。
+         依据：同步存储按 `syncUserDir(who.username)` **按用户隔离**，device 只用于标记
+         "哪台机器传的"，**不是隔离凭据** ⇒ 桌面版用云账号 token 直接上传是安全的。
+         ⛔ 仍然要求已登录：`who` 来自 `syncAuth()`，匿名请求在这一步之前就被拦掉了。
+         ⛔ 桌面版没有配对流程（`readDeviceToken` 只在云助手的 headless 里），
+            这条 403 会让桌面版的「上传会话」永远失败 —— 这是放开它的直接原因。 */
       const body = await readBodyLarge();
       const incoming = Array.isArray(body && body.sessions) ? body.sessions : [];
       const index = readSyncIndex(who.username);
       let used = syncUsageBytes(who.username);
       const results = [];
       for (const item of incoming) {
-        const id = String(item && item.id || "").trim();
+        const id = syncId(item && item.id);
         if (!id) continue;
         const lines = Array.isArray(item.lines) ? item.lines.map((l) => String(l)) : [];
         const from = Math.max(0, Number(item.fromOrdinal || 0));
@@ -1695,7 +1935,7 @@ const server = http.createServer(async (req, res) => {
       if (!who) return send(401, { ok: false, error: "unauthorized" });
       const body = await readBody();
       const index = readSyncIndex(who.username);
-      const ids = Array.isArray(body && body.ids) ? body.ids.map(String) : [];
+      const ids = (Array.isArray(body && body.ids) ? body.ids : []).map(syncId).filter(Boolean);
       const project = String(body && body.project || "");
       const targets = Object.keys(index).filter((id) => (ids.includes(id)) || (project && index[id] && index[id].project === project));
       for (const id of targets) {
@@ -1731,6 +1971,10 @@ const server = http.createServer(async (req, res) => {
           ready: Boolean(currentUpstreamBase() && currentGatewayKey()),
           /* 客户端据此决定是否要调 /proxy/token 签发（明文只在那一次响应里） */
           hasProxyToken: Boolean(db.proxyTokens[who.username]),
+          /* ⛔ 10-19（清单 4）：只给**前缀**（不含密钥值）⇒ 客户端能发现「本机缓存已被轮换」，
+             不必等一次 401 才知道。`proxyTokenAt` 用于界面显示签发时间。 */
+          proxyTokenPrefix: String(db.proxyTokens[who.username]?.prefix || ""),
+          proxyTokenAt: Number(db.proxyTokens[who.username]?.createdAt || 0),
         },
         models,
         enabledCount: enabled.size,
@@ -1800,9 +2044,46 @@ const server = http.createServer(async (req, res) => {
       if (!presented || !presented.startsWith(PROXY_TOKEN_PREFIX)) {
         return send(401, { ok: false, error: "proxy-token-required" });
       }
-      const hit = proxyUserByToken(presented);
+      /* 10-20：内部网关钥匙放行（不参与用户令牌轮换，见常量处说明）。 */
+      const internal = Boolean(INTERNAL_PROXY_KEY && presented === INTERNAL_PROXY_KEY);
+      const hit = internal
+        ? { username: INTERNAL_PROXY_OWNER, row: { username: INTERNAL_PROXY_OWNER, ips: [] } }
+        : proxyUserByToken(presented);
       if (!hit) return send(401, { ok: false, error: "invalid-proxy-token" });
-      const owner = db.users.find((u) => u.username === hit.username);
+      /* 10-20 根治「勾了 4 个只有 1 个能用」：内部网关的真实调用人不是 PPZ11。
+         ⛔⛔ 身份必须**两证一致**：MEMHUB 会把客户端自带的 X-Tdai-User-Key 原样透传，
+            单靠这个头 = 客户端自报身份（实测：拿 A 的钥匙、塞 B 的 memKey，服务端按 B 处理）。
+            现在要求同时带本机账号的代理令牌（X-Harness-Proxy-Token），两者映射到同一用户才放行；
+            缺令牌时**不采信 memKey**（回退内部账号），避免伪造头越权/串号。 */
+      const claimedMemKey = internal ? String(req.headers["x-tdai-user-key"] || "").trim() : "";
+      const claimedToken = internal ? String(req.headers["x-harness-proxy-token"] || "").trim() : "";
+      const hasIdentity = Boolean(claimedToken || claimedMemKey);
+      const memUser = internal ? usernameByMemoryKey(claimedMemKey) : "";
+      const tokenHit = claimedToken ? proxyUserByToken(claimedToken) : null;
+      if (internal && hasIdentity) {
+        /* ⛔ 双证必须**同时存在且指向同一用户**：只有其中一枚 ⇒ 不完整，直接拒。
+           这是防「偷到代理令牌/记忆 key 任意一枚就能冒用」的第二道锁。 */
+        if (!claimedToken || !claimedMemKey) {
+          return send(403, { ok: false, error: "identity-incomplete", message: "云端身份不完整（缺少令牌或记忆 key），请重新登录并同步模型" });
+        }
+        if (!tokenHit) {
+          return send(401, { ok: false, error: "invalid-identity-token", message: "云端身份令牌无效，请重新同步模型后再试" });
+        }
+        if (!memUser) {
+          return send(403, { ok: false, error: "identity-unknown-memkey", message: "云端记忆身份无法识别，请重新登录并同步模型" });
+        }
+        if (tokenHit.username !== memUser) {
+          console.log(`[proxy] ⛔ 身份不一致：proxyToken=${tokenHit.username} memKey=${memUser}`);
+          return send(403, { ok: false, error: "identity-mismatch", message: "云端身份校验不一致，已拒绝（请重新登录并同步模型）" });
+        }
+      }
+      const effectiveUsername = internal && hasIdentity ? tokenHit.username : hit.username;
+      if (internal && effectiveUsername !== hit.username) {
+        console.log(`[proxy] 内部网关请求归属 ${hit.username} → ${effectiveUsername}（token+memKey 已校验）`);
+      } else if (internal && !hasIdentity) {
+        console.log(`[proxy] ⚠ 内部网关未带用户身份 ⇒ 回退 ${hit.username}（老客户端兼容；不涉及任何真实用户）`);
+      }
+      const owner = db.users.find((u) => u.username === effectiveUsername);
       if (!owner || owner.disabled) return send(403, { ok: false, error: "account-disabled" });
       /* 来源绑定：首次见到就记住，最多 PROXY_IP_LIMIT 个；超出直接拒（防令牌被转发给别人用） */
       const ip = ipOf(req);
@@ -1824,7 +2105,7 @@ const server = http.createServer(async (req, res) => {
       const bodyBuf = Buffer.concat(chunks);
       /* ⛔ 勾选即生效：只放行用户勾选的模型（未勾选 ⇒ 403，附明确文案）。
          这是"勾选管理哪些模型生效"的执行点 —— 界面只是表达，这里是强制。 */
-      const allowed = new Set(Array.isArray(db.userModels[hit.username]) ? db.userModels[hit.username] : []);
+      const allowed = new Set(Array.isArray(db.userModels[effectiveUsername]) ? db.userModels[effectiveUsername] : []);
       if (p.endsWith("models")) {
         // 模型清单也按勾选过滤（客户端因此只看得到自己启用的）
         const upstreamList = await (async () => {
@@ -1846,7 +2127,7 @@ const server = http.createServer(async (req, res) => {
         return send(200, { ...upstreamList, data });
       }
       /* 余额预检：≤0 直接拒（不让上游白跑；管理员发放后即可继续） */
-      const myBalance = pointsOf(hit.username).balance;
+      const myBalance = pointsOf(effectiveUsername).balance;
       if (myBalance <= 0) {
         return send(402, { ok: false, error: "insufficient-points", balance: myBalance, message: "积分为 0，已暂停调用 —— 请联系管理员加分或改用其它供应商" });
       }
@@ -1878,6 +2159,17 @@ const server = http.createServer(async (req, res) => {
            取不到就如实不记（宁可少记也不瞎记），由对账环节兜底。 */
         try {
           const text = Buffer.concat(seen).toString("utf8");
+          /* ── 逆向调试开关（默认关）──────────────────────────────────────────
+             ⛔ 目的：确认上游回执里**到底有没有"缓存 token"字段**。
+               没有它，上游的精确计费公式**不可逆** —— 因为同一个 token 数它能扣 0.55 也能扣 9.33，
+               差值只能来自"缓存命中比例"，而这个比例我们拿不到。
+             ⛔ 只打 `usage` 对象（token 数/credit），**不打对话内容、不打提示词**。
+             开启方式：`HARNESS_CAPTURE_USAGE=1` 写进 systemd Environment 或 config.env 后重启。 */
+          if (String(process.env.HARNESS_CAPTURE_USAGE || "") === "1") {
+            const um = /"usage"\s*:\s*(\{[\s\S]{0,2000}?\})\s*[,}]/.exec(text);
+            if (um) console.log(`[usage-raw] ${wantedModel} ${um[1].replace(/\s+/g, " ").slice(0, 1200)}`);
+            else console.log(`[usage-raw] ${wantedModel} 回执里没有 usage 对象（非 JSON 流？）`);
+          }
           let credit = null;
           const m1 = /"credit"\s*:\s*(-?[0-9.]+)/.exec(text);
           if (m1) credit = Number(m1[1]);
@@ -1891,14 +2183,16 @@ const server = http.createServer(async (req, res) => {
               } catch { /* 忽略非 JSON 行 */ }
             }
           }
-          /* ⛔⛔ 21:5x 用户定案：「以后就按用户管理里面的倍率扣积分，**不用管上游了**」。
-             ⇒ 计价口径**唯一**取自服务端目录（管理界面可改的 `credits` 倍率），
-                上游返回的 `usage.credit` **不再参与**（实测它对收费模型也常返 0）。
-             公式：**积分 = (prompt_tokens + completion_tokens) / 1000 × 倍率**，保留 2 位小数。
-             例：deepseek-v4.1-flash（×0.11）跑 1000 tokens ⇒ 0.11 分；95 tokens ⇒ 0.01 分。
-             ⛔ 真·免费模型（倍率 ×0.00 或目录未配倍率）⇒ 结果为 0 ⇒ 只留痕不扣分
-                （10-14 用户令「免费的模型，只要调用了，就要有记录」）。
-             ⛔ "拿不到 token 数"时才回落到上游 credit，再拿不到就不记（宁可少记不瞎记）。 */
+          /* ⛔⛔ 口径变更史（**看这段再动手**）：
+             · 10-17 21:5x 用户定案「就按用户管理里的倍率扣，不用管上游」⇒ 用 tokens/1000×倍率。
+             · **10-18 17:1x 用户推翻**：「上游消耗才一点，我们消耗 20 多积分，差得太大了」
+               ⇒ 改回**以上游 `credit` 为基准**（用户在选择里明确选「以上游 credit 为准（对得上账）」）。
+               实测差距：hy4-preview 73,655 tokens ⇒ 上游 1.37 / 旧算法 21.36（差 15 倍）；
+               根因是上游按**缓存命中**折价（截图显示缓存 92%），而我们的回执里**没有 cached_tokens**
+               ⇒ 我们连"扣缓存"都做不到，只能直接采信上游的 credit。
+             · 闲时倍率仍生效：按**比值**折算 `credit × (闲时倍率 / 高峰倍率)`，
+               这样"闲时调低多少"照样管用，但基数不偏离上游。
+             ⛔ 拿不到上游 credit（null/0）才回落到 `tokens/1000 × 倍率`，并在日志里写清用的是哪条路径。 */
           try {
             /* ⛔ 模型名归一化后再查目录：客户端可能带 `cn:` / `global:` 前缀或大小写差异，
                原先 `m.id === wantedModel` 的**严格相等**会把这类请求判成"目录里没有" ⇒ rate=0
@@ -1935,13 +2229,36 @@ const server = http.createServer(async (req, res) => {
             }
             const rate = offRate !== null ? offRate : normalRate;
             const peak = offRate !== null ? hit : null;
-            if (totalTokens > 0 && Number.isFinite(rate) && rate > 0) {
-              const computed = Math.round((totalTokens / 1000) * rate * 100) / 100;
+            /* ⛔⛔ 10-18 修计价基准（用户实测差距 15 倍）：
+               上游 hy4-preview 73,655 tokens **实付 1.37**，而我们 tokens/1000×0.29 = **21.36**。
+               原因：上游 `credit` 是它服务端自己算的 —— 单价因模型而异、还含它自己的折扣/缓存口径，
+               我们**复现不了**（同 token 不同请求上游能给 0.55 ~ 9.33）。
+               ⇒ **基准 = 上游 credit（>0 时）**，拿不到才回落到 `tokens/1000 × 倍率`。
+               ⇒ 闲时倍率按**比值**折算：`credit × (闲时倍率 / 高峰倍率)` ——
+                  这样"闲时倍率调低多少"仍然生效，但基数不会偏离上游。 */
+            const upCredit = (credit !== null && Number.isFinite(credit) && credit > 0) ? credit : null;
+            const ratio = normalRate > 0 ? rate / normalRate : 1;
+            /* ⛔⛔ 10-18 17:1x 用户确认的**双轨**语义（原话：
+               「如果我修改倍率，就以我修改的倍率为准对吧，如果没修改就以上游积分消耗为准是吧」）：
+               · **改过**该模型倍率（`creditsLocked === true`）⇒ 按**你设的倍率**算：
+                 `tokens/1000 × 倍率`（闲时倍率直接替换倍率，同既有语义）。
+               · **没改过** ⇒ 以上游 `credit` 为准（× 闲时比值）。
+               · 上游没给 credit ⇒ 回落本地倍率（日志写明）。
+               ⛔ `creditsLocked` 就是"管理员是否显式改过"的标记 —— 改过即钉住，
+                  同步目录也不会覆盖（这正是它存在的意义，拿它当判据最准）。 */
+            const locked = Boolean(item && item.creditsLocked === true);
+            if (locked && totalTokens > 0 && Number.isFinite(rate) && rate > 0) {
+              credit = Math.round((totalTokens / 1000) * rate * 100) / 100;
+              console.log(`[points] 计价：${wantedModel} ${totalTokens} tokens × ${rate} = ${credit}（你改过倍率 ⇒ 按你的倍率）`);
+            } else if (upCredit !== null) {
+              credit = Math.round(upCredit * ratio * 100) / 100;
               const offNote = peak
-                ? `（闲时${peak.label ? `「${peak.label}」` : ""}${peak.start}–${peak.end}点，按闲时倍率 ${rate}${ownRate !== null ? "，该模型单独配置" : ""}）`
+                ? `（闲时${peak.label ? `「${peak.label}」` : ""}，按倍率比 ${ratio.toFixed(3)} 折算）`
                 : "";
-              console.log(`[points] 计价：${wantedModel} ${totalTokens} tokens × ${rate} = ${computed}${offNote}（口径=服务端倍率）`);
-              credit = computed;   // ⛔ 一律以本服务端的倍率为准（忽略上游 credit）
+              console.log(`[points] 计价：${wantedModel} 上游 credit ${upCredit}${offNote} → 扣 ${credit}（没改倍率 ⇒ 基准=上游）`);
+            } else if (totalTokens > 0 && Number.isFinite(rate) && rate > 0) {
+              credit = Math.round((totalTokens / 1000) * rate * 100) / 100;
+              console.log(`[points] 计价：${wantedModel} ${totalTokens} tokens × ${rate} = ${credit}（上游没给 credit，回落本地倍率）`);
             } else if (!(credit > 0)) {
               credit = 0;
             }
@@ -1950,13 +2267,13 @@ const server = http.createServer(async (req, res) => {
             const ref = `call:${crypto.randomBytes(8).toString("hex")}`;
             const label = wantedModel || "模型调用";
             const r = credit > 0
-              ? addPoints(hit.username, -credit, "consume", ref, `限时福利 · ${label} 消耗 ${credit}`)
-              : addUsageOnly(hit.username, "consume", ref, `限时福利 · ${label}（免费模型，未扣积分）`);
+              ? addPoints(effectiveUsername, -credit, "consume", ref, `限时福利 · ${label} 消耗 ${credit}`)
+              : addUsageOnly(effectiveUsername, "consume", ref, `限时福利 · ${label}（免费模型，未扣积分）`);
             /* ⛔ 10-18 修：`addPoints` / `addUsageOnly` **只改内存不落盘**（它们的实现里没有 persist），
                原来这里也没有 ⇒ 这条消耗流水要等**下一次**请求在鉴权处顺带 persist 才写进 data.json；
                若期间服务重启/崩溃，这次消耗就**永久丢失**（用户只调一次就重启 ⇒ 白送）。
                消耗是账本，必须当场落盘。 */
-            if (r.changed) { persist(); console.log(`[points] ${hit.username} ${credit > 0 ? `消耗 ${credit}` : "免费调用"}（余额 ${r.balance}）`); }
+            if (r.changed) { persist(); console.log(`[points] ${effectiveUsername} ${credit > 0 ? `消耗 ${credit}` : "免费调用"}（余额 ${r.balance}）`); }
           }
         } catch { /* 记分失败不影响调用本身 */ }
       } catch (error) {
@@ -1964,9 +2281,6 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
-    /* 管理员：清空模型目录（用户 10-22：「直接清空，不要留着」+ 一个手动按钮）。
-       ⛔ 显式 confirm：清空会让用户端暂时看不到任何模型（目录为空时客户端回落为全部可见，故不会锁死）。
-       ⛔ 只清目录，不动 userModels（每个用户自己的勾选）与积分流水。 */
     if (p === "/admin/models/clear" && req.method === "POST") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       const body = await readBody();
@@ -1979,6 +2293,7 @@ const server = http.createServer(async (req, res) => {
       console.log(`[catalog] ${me.username} 清空模型目录（原有 ${before} 个，自动同步已暂停）`);
       return send(200, { ok: true, cleared: before });
     }
+    /* 管理员：立刻重新拉取模型目录（force 绕过缓存） */
     /* 管理员：立刻重新拉取模型目录（force 绕过缓存） */
     if (p === "/admin/models/sync" && req.method === "POST") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
@@ -2088,9 +2403,6 @@ const server = http.createServer(async (req, res) => {
       console.log(`[admin] ${me.username} 将模型 ${id} 的倍率设为 ${credits || "免费"}${opRate === null ? "、闲时系数=跟随全局" : opRate !== undefined ? `、闲时系数=${opRate}` : ""}（已钉住，同步不覆盖）`);
       return send(200, { ok: true, id, credits, locked: true, offPeakRate: item.offPeakRate === undefined ? null : item.offPeakRate });
     }
-    /* 管理员：**批量**改倍率 / 批量恢复上游（10-22 用户：「模型管理加一个批量管理功能」）。
-       ⛔ 与单条 /admin/models/credits 同一套归一化与「钉住」语义，只是作用在多个 id 上；
-       ⛔ 先全量校验再落字段（中途 400 不能留下半截状态）。 */
     if (p === "/admin/models/batch" && req.method === "POST") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       const body = await readBody();
@@ -2162,6 +2474,9 @@ const server = http.createServer(async (req, res) => {
     }
     /* ── 10-18 闲时（限时）倍率：管理员可改 ──────────────────────────────
        语义：**折扣系数，乘在模型倍率之上**。读取用于界面回显 + 显示当前命中窗口。 */
+    /* 管理员：**批量**改倍率 / 批量恢复上游（10-22 用户：「模型管理加一个批量管理功能」）。
+       ⛔ 与单条 /admin/models/credits 同一套归一化与「钉住」语义，只是作用在多个 id 上；
+       ⛔ 先全量校验再落字段（中途 400 不能留下半截状态）。 */
     if (p === "/admin/offpeak" && req.method === "GET") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       return send(200, {
@@ -2610,10 +2925,6 @@ const server = http.createServer(async (req, res) => {
             : "不可达：候选端点都不通 —— 看下面每一行的原因",
       });
     }
-    /* 管理员：**聊天测试的可选模型**（10-22 用户：「这个聊天测试，能选的模型太少了」）。
-       原来下拉只吃 `/admin/models` 的目录（会被排除表/清空/手动删除影响，且目录没同步就没了）
-       ⇒ 这里**直接问上游要全量 id**（不落盘、不过滤、不去重合并目录），再并上目录里的 id。
-       ⛔ 只读：不改目录、不改倍率；拉不到就回 `ids` = 目录那份 + 逐条原因，面板照常手填。 */
     if (p === "/admin/upstream/models" && req.method === "GET") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       const base = currentCatalogBase();
@@ -2674,43 +2985,6 @@ const server = http.createServer(async (req, res) => {
       const map = modelMapTable();
       return send(200, { ok: true, map, count: Object.keys(map).length });
     }
-    if (p === "/admin/upstream/model-map" && req.method === "POST") {
-      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
-      const body = await readBody();
-      let next = null;
-      if (body && body.map && typeof body.map === "object" && !Array.isArray(body.map)) {
-        next = body.map;
-      } else if (body && typeof body.text === "string") {
-        next = {};
-        for (const raw of body.text.split(/\r?\n/)) {
-          const line = String(raw || "").trim();
-          if (!line || line.startsWith("#") || line.startsWith("//")) continue;
-          const m = line.match(/^(.+?)\s*(?:=>|->|\t|\||,|=)\s*(.+)$/);
-          if (!m) continue;
-          const from = m[1].trim();
-          const to = m[2].trim();
-          if (from && to) next[from] = to;
-        }
-      }
-      if (!next) return send(400, { ok: false, error: "没有可保存的映射（要 {map} 或 {text}）" });
-      /* 清洗：只留非空字符串对；条数上限防炸库。 */
-      const clean = {};
-      for (const [k, v] of Object.entries(next)) {
-        const from = String(k || "").trim();
-        const to = String(v ?? "").trim();
-        if (from && to && from !== to) clean[from] = to;
-        if (Object.keys(clean).length >= 2000) break;
-      }
-      db.upstream = { ...(db.upstream || {}), modelMap: clean };
-      persist();
-      const changed = applyModelMap();
-      console.log(`[upstream] ${me.username} 更新模型映射 ${Object.keys(clean).length} 条（目录展示名更新 ${changed} 个）`);
-      return send(200, { ok: true, map: clean, count: Object.keys(clean).length, renamed: changed });
-    }
-    /* 管理员：**自动探测映射**（10-22）。对目录里的模型逐个发一次 `max_tokens:1` 的极小请求，
-       读响应里的 `model` —— 上游若做了映射，这里回的是**真实模型名**（与请求 id 不同）。
-       ⛔ 会产生极小消耗（每个模型约 1 个输出 token），所以只在管理员主动点按钮时跑，不自动轮询。
-       ⛔ 上游原样回显请求 id 时无法揭示映射 ⇒ 记为 echoed，不写表（不猜）。 */
     if (p === "/admin/upstream/probe-map" && req.method === "POST") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       const body = await readBody();
@@ -2968,12 +3242,39 @@ const server = http.createServer(async (req, res) => {
           : "不可达：看下面每一行的原因",
       });
     }
+    /* ── 功能开关（10-18）：管理员决定用户能不能同步会话 ─────────────────────
+       ⛔ POST 只接受**白名单字段**（`sessionSync`），不做通用设置写入 ——
+          否则这个接口迟早被人拿来塞任意键，变成一个"能改任意配置"的后门。 */
+    if (p === "/admin/features" && req.method === "GET") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      return send(200, {
+        ok: true,
+        features: {
+          sessionSync: !(db.features && db.features.sessionSync === false),
+          /* ⛔ 10-18 用户令「加自动更新重启」：默认**关** —— 自动重启会中断正在使用的人。 */
+          autoUpdate: Boolean(db.features && db.features.autoUpdate === true),
+          version: APP_VERSION,
+        },
+      });
+    }
+    if (p === "/admin/features" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const body = await readBody();
+      if (typeof body.sessionSync !== "boolean") return send(400, { ok: false, error: "sessionSync 必须是 true 或 false" });
+      if (typeof db.features !== "object" || !db.features) db.features = {};
+      db.features.sessionSync = body.sessionSync;
+      if (typeof body.autoUpdate === "boolean") db.features.autoUpdate = body.autoUpdate;
+      persist();
+      console.log(`[features] ${me.username} 会话同步 → ${body.sessionSync ? "开启" : "关闭"}`);
+      return send(200, { ok: true, sessionSync: body.sessionSync });
+    }
     /* ── 运维：更新 / 重启（10-18 用户令「加上更新，重启功能」）────────────────
-       ⛔⛔ 高危接口，三条硬约束：① 仅 admin；② 必须显式 `{ confirm: true }`；
-          ③ 更新只做 `git pull --ff-only`（冲突时宁可失败，也不在生产目录留半截合并）。
-       ⛔ 重启用 `process.exit(0)` 交给 systemd `Restart=always`，
-          **不要**自己 spawn 新进程（会出现两个实例抢同一份 data.json）。
-       ⛔ 先 send 响应再退出，否则前端只看到"连接被重置"。 */
+       ⛔⛔ 高危接口（能改代码、能杀进程），三条硬约束：
+          ① 仅 admin；② 必须显式 `{ confirm: true }`；③ 更新只做 `git pull --ff-only`
+             （不 merge、不 rebase —— 冲突时宁可失败也不要在生产目录里留下半截合并）。
+       ⛔ 重启用 `process.exit(0)` 交给 systemd 的 `Restart=always` 拉起，
+          **不要**自己 spawn 新进程：那会出现两个实例抢同一份 data.json。
+       ⛔ 必须**先 send 响应再退出**，否则前端只看到"连接被重置"。 */
     if (p === "/admin/system/restart" && req.method === "POST") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
       const body = await readBody();
@@ -2988,36 +3289,65 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody();
       if (!body || body.confirm !== true) return send(400, { ok: false, error: "需要确认（confirm: true）" });
       const repoRoot = path.resolve(__dirname, "..");
-      if (!fs.existsSync(path.join(repoRoot, ".git"))) {
+      /* ⛔⛔ 三条更新路径（用户令：「我这个是跑在服务器上部署的啊，为什么不行，那我的不行，人家的也都不行」
+         —— 自部署服务一键更新是**标准能力**，安全性靠工程手段保证，不靠拒绝）：
+           ① git 部署 ⇒ `git pull --ff-only`（失败 reset 回滚）
+           ② 非 git 但有 selfupdate.sh ⇒ 跑脚本（下载→备份→覆盖→语法闸；**下载不全则整体中止**）
+           ③ 两者都没有 ⇒ 告诉管理员怎么装脚本
+         ⛔ 非 git 路径必须 `--no-restart`：脚本里的 systemctl restart 会把**正在跑脚本的我们**杀掉，
+            响应就发不出去 ⇒ 重启统一由本进程 exit 交给 systemd。 */
+      const scriptPath = [path.join(__dirname, "selfupdate.sh"), path.join(repoRoot, "selfupdate.sh")]
+        .find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || "";
+      const isGit = fs.existsSync(path.join(repoRoot, ".git"));
+      if (!isGit && !scriptPath) {
         return send(400, {
           ok: false,
-          error: "当前安装不是 git 部署（目录里没有 .git），无法一键更新。",
-          hint: "请用 git clone 方式重装（见 README 第 2 节），或手动覆盖 server-account/ 与 web/ 后再点「重启服务」。",
+          error: "既不是 git 部署，也没有自助更新脚本（selfupdate.sh），无法一键更新。",
+          hint: "把仓库里的 cloud/scripts/selfupdate.sh 放到 server.js 同目录（chmod +x），再点一次；或按 README 用分发包装。",
         });
       }
       const { execFile } = require("node:child_process");
-      const run = (args) => new Promise((resolve) => {
-        execFile("git", args, { cwd: repoRoot, timeout: 60000 }, (err, stdout, stderr) => {
+      const execIn = (cmd, args, cwd) => new Promise((resolve) => {
+        execFile(cmd, args, { cwd, timeout: 180000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
           resolve({ ok: !err, out: String(stdout || "").trim(), err: String(stderr || (err && err.message) || "").trim() });
         });
       });
-      const before = await run(["rev-parse", "--short", "HEAD"]);
-      const pull = await run(["pull", "--ff-only"]);
-      if (!pull.ok) {
-        await run(["reset", "--hard", "ORIG_HEAD"]);
-        console.log(`[ops] ${me.username} 更新失败：${pull.err.slice(0, 200)}`);
-        return send(500, { ok: false, error: "更新失败：" + (pull.err || "未知错误"), detail: pull.out });
+      let detail = "";
+      let changed = true;
+      if (isGit) {
+        const git = (args) => execIn("git", args, repoRoot);
+        const before = await git(["rev-parse", "--short", "HEAD"]);
+        const pull = await git(["pull", "--ff-only"]);
+        if (!pull.ok) {
+          await git(["reset", "--hard", "ORIG_HEAD"]);
+          console.log(`[ops] ${me.username} git 更新失败：${pull.err.slice(0, 200)}`);
+          return send(500, { ok: false, error: "更新失败（已回滚到原 commit）：" + (pull.err || "未知错误"), detail: pull.out });
+        }
+        const after = await git(["rev-parse", "--short", "HEAD"]);
+        changed = before.out !== after.out;
+        detail = `${before.out} → ${after.out}\n${pull.out}`;
+      } else {
+        const r = await execIn("bash", [scriptPath, "--no-restart"], repoRoot);
+        if (!r.ok) {
+          console.log(`[ops] ${me.username} 脚本更新失败：${r.err.slice(0, 200)}`);
+          return send(500, {
+            ok: false,
+            error: "更新失败（脚本已中止，本机文件未被部分覆盖，服务未重启）",
+            detail: (r.out + "\n" + r.err).slice(0, 2000),
+          });
+        }
+        detail = r.out;
       }
-      const after = await run(["rev-parse", "--short", "HEAD"]);
-      const changed = before.out !== after.out;
-      console.log(`[ops] ${me.username} 更新${changed ? `成功 ${before.out}→${after.out}` : "检查完成（无变化）"}`);
+      console.log(`[ops] ${me.username} 更新完成（${isGit ? "git" : "脚本"}），正在重启`);
       send(200, {
         ok: true, restarting: true, changed,
-        from: before.out, to: after.out,
-        output: pull.out.slice(0, 1200),
-        message: changed ? `已更新 ${before.out} → ${after.out}，正在重启` : "代码已是最新（无变化），正在重启",
+        mode: isGit ? "git" : "script",
+        output: detail.slice(0, 2000),
+        message: isGit
+          ? (changed ? "已更新代码，正在重启（约 3–5 秒恢复）" : "代码已是最新，正在重启")
+          : "文件已更新（旧版备份为 *.bak-*），正在重启（约 3–5 秒恢复）",
       });
-      setTimeout(() => process.exit(0), 400);
+      setTimeout(() => process.exit(0), 600);
       return;
     }
     /* ── 邀请码：用户侧校验 + 管理端生成/监控（10-16）────────────────────────── */
@@ -3087,6 +3417,72 @@ const server = http.createServer(async (req, res) => {
       persist();
       console.log(`[invite] ${me.username} 调整邀请码 ${row.code}（停用=${row.disabled}，上限=${row.maxUses}）`);
       return send(200, { ok: true, invite: inviteView(row) });
+    }
+    /* 10-19：给**已有账号**批量补建知识库/记忆空间（注册自动建的改动只对新用户生效）。
+       ⛔ 串行 + 间隔 600ms：weknora 建库 1~3s，并发会把它的 postgres 打满（实测过的教训）。
+       ⛔ 幂等：已存在的 kbId 会走 ensure* 的"存活检查"，不会重复建。 */
+    /* 10-19：**仅本机**触发批量补建（管理员没登录态时用）。
+       ⛔ 只接受 127.0.0.1 / ::1 —— 外部访问一律 403，等同不暴露。 */
+    if (p === "/internal/provision-all" && req.method === "POST") {
+      const localOnly = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+      if (!localOnly) return send(403, { ok: false, error: "仅限本机" });
+      const targets = db.users.filter((u) => u && u.username);
+      const out = { total: targets.length, knowledge: { ok: 0, fail: 0 }, memory: { ok: 0, fail: 0 } };
+      (async () => {
+        for (const u of targets) {
+          for (const feature of ["knowledge", "memory"]) {
+            try {
+              const r = feature === "knowledge" ? await ensureKnowledgeFor(u.username) : await ensureMemoryFor(u.username);
+              if (r && r.ok === false) { out[feature].fail += 1; console.warn(`[provision-all] ${u.username}/${feature} 未就绪：${sanitize(String(r.error || ""))}`); }
+              else out[feature].ok += 1;
+            } catch (e) {
+              out[feature].fail += 1;
+              console.warn(`[provision-all] ${u.username}/${feature} 失败：${sanitize(String((e && e.message) || e))}`);
+            }
+            await new Promise((r) => setTimeout(r, 600));
+          }
+        }
+        console.log(`[provision-all] 完成：知识库 ${out.knowledge.ok}/${out.knowledge.fail}，记忆 ${out.memory.ok}/${out.memory.fail}`);
+      })();
+      return send(200, { ok: true, queued: targets.length });
+    }
+    if (p === "/admin/provision-all" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const targets = db.users.filter((u) => u && u.username && String(u.username) !== me.username);
+      const out = { total: targets.length, knowledge: { ok: 0, fail: 0 }, memory: { ok: 0, fail: 0 } };
+      (async () => {
+        for (const u of targets) {
+          for (const feature of ["knowledge", "memory"]) {
+            try {
+              const r = feature === "knowledge" ? await ensureKnowledgeFor(u.username) : await ensureMemoryFor(u.username);
+              if (r && r.ok === false) { out[feature].fail += 1; console.warn(`[provision-all] ${u.username}/${feature} 未就绪：${sanitize(String(r.error || ""))}`); }
+              else out[feature].ok += 1;
+            } catch (e) {
+              out[feature].fail += 1;
+              console.warn(`[provision-all] ${u.username}/${feature} 失败：${sanitize(String((e && e.message) || e))}`);
+            }
+            await new Promise((r) => setTimeout(r, 600));
+          }
+        }
+        console.log(`[provision-all] 完成：知识库 ${out.knowledge.ok}/${out.knowledge.fail}，记忆 ${out.memory.ok}/${out.memory.fail}`);
+      })();
+      return send(200, { ok: true, queued: targets.length, note: "后台串行补建中，看 journalctl -u chc-account 的 [provision-all] 日志" });
+    }
+    if (p === "/admin/invites/delete" && req.method === "POST") {
+      if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      const body = await readBody();
+      const row = inviteRow(body && body.code);
+      if (!row) return send(404, { ok: false, error: "邀请码不存在" });
+      /* ⛔ 只允许删「从未用过」的码：usedCount>0 的码上记着账，且已注册账号的 inviteCode 指向它，
+         删了会让来源悬空、历史统计失真 ⇒ 这类码只能停用。 */
+      if (Number(row.usedCount || 0) > 0) {
+        return send(409, { ok: false, error: "这个码已经用过 " + row.usedCount + " 次，只能停用不能删除" });
+      }
+      const code = row.code;
+      delete db.invites[code];
+      persist();
+      console.log("[invite] " + me.username + " 删除邀请码 " + code + "（未使用）");
+      return send(200, { ok: true });
     }
     if (p === "/admin/invites/accounts" && req.method === "GET") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
@@ -3349,6 +3745,25 @@ console.log(
     "｜网关密钥：" + (WBM_GATEWAY_KEY ? "已配置" : "未配置")
 );
 server.listen(PORT, "127.0.0.1", () => console.log(`[accounts] 账号服务就绪 127.0.0.1:${PORT}（users=${db.users.length}, file=${DATA_FILE}）`));
+
+/* ── 自动更新（10-18）：每 6 小时检查，仅当 db.features.autoUpdate === true 时应用 ──
+   ⛔ 默认关；开启后有新版才覆盖并重启（systemd Restart=always 拉起）。
+   ⛔ 检查失败静默；只有真的升级了（日志出现 VERSION →）才重启。 */
+setInterval(() => {
+  try {
+    if (!(db.features && db.features.autoUpdate === true)) return;
+    const script = [path.join(__dirname, "selfupdate.sh"), path.join(__dirname, "..", "selfupdate.sh")].find((f) => { try { return fs.existsSync(f); } catch { return false; } });
+    if (!script) return;
+    const { execFile } = require("node:child_process");
+    execFile("bash", [script, "--no-restart"], { cwd: path.dirname(script), timeout: 240000, maxBuffer: 4194304 }, (err, stdout) => {
+      if (err) { console.error("[auto-update] 失败：", String(err.message).slice(0, 200)); return; }
+      if (/VERSION →/.test(String(stdout || ""))) {
+        console.log("[auto-update] 已更新，2s 后重启");
+        setTimeout(() => process.exit(0), 2000);
+      }
+    });
+  } catch (e) { /* 静默 */ }
+}, 6 * 60 * 60 * 1000);
 
 /* ── 一次性补齐（10-16）：老的权益记录没有"容量"字段 ⇒ 按当前默认补上 ──────────────
    背景：容量是后加的（知识库/记忆各 1 GB、互相独立），早先激活的账号 quotaMb 是 0，
