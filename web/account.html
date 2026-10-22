@@ -1661,12 +1661,15 @@
         return;
       }
       var rows = (j.probes || []).map(function (p) {
-        var col = p.ok ? "var(--ok)" : "var(--bad)";
+        /* 10-22：可选项失败但整体通了 ⇒ 显示「未提供（可选）」，不打红叉（普通网关本来就没有目录端点）。 */
+        var soft = p.optional && !p.ok && j.ok;
+        var col = p.ok ? "var(--ok)" : (soft ? "var(--muted)" : "var(--bad)");
+        var hint = soft ? "未提供（可选）：这个上游没有该端点，不影响上面的连通结论" : p.hint;
         return '<div style="padding:7px 0;border-top:1px solid var(--line-soft)">'
-          + '<b style="color:' + col + '">' + (p.ok ? "✓" : "✗") + " " + esc(p.name) + "</b>"
+          + '<b style="color:' + col + '">' + (p.ok ? "✓" : (soft ? "—" : "✗")) + " " + esc(p.name) + "</b>"
           + '<span class="hint" style="margin-left:6px">HTTP ' + (p.status || "—") + " · " + p.ms + "ms"
           + (p.count != null ? " · " + p.count + " 个模型" : "") + "</span>"
-          + (p.hint ? '<div class="hint" style="margin-top:3px">' + esc(p.hint) + "</div>" : "")
+          + (hint ? '<div class="hint" style="margin-top:3px">' + esc(hint) + "</div>" : "")
           + "</div>";
       }).join("");
       box.style.display = "";
@@ -1869,6 +1872,10 @@
     api("/admin/models").then(function (r) {
       if (!r.ok || !r.j || !r.j.ok) { amSay("模型目录读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
       amData = r.j;
+      /* 10-22：目录空且最近一次同步失败 ⇒ 直接把原因说出来（原来只显示空表，管理员以为「没模型」）。 */
+      if (!(r.j.list || []).length && r.j.syncError) {
+        amSay("模型目录为空：" + (r.j.syncMessage || r.j.syncError) + "（到「上游 API」点「测试连通性」核对地址与密钥）", "bad");
+      }
       /* 倍率表 */
       var box = $("amRows"); box.innerHTML = "";
       (r.j.list || []).forEach(function (m) {
@@ -2028,7 +2035,7 @@
     api("/admin/models/sync", { method: "POST" }).then(function (x) {
       $("amSync").disabled = false;
       if (x.ok && x.j && x.j.ok) { amSay("目录已同步，共 " + ((x.j.list || []).length || x.j.total || 0) + " 个模型", "ok"); loadAdminModels(); }
-      else { amSay("同步失败：" + ((x.j && x.j.error) || x.status) + "（已保留现有目录）", "bad"); loadAdminModels(); }
+      else { amSay("同步失败：" + ((x.j && (x.j.message || x.j.error)) || ("HTTP " + x.status)) + "（已保留现有目录）", "bad"); loadAdminModels(); }
     }).catch(function () { $("amSync").disabled = false; amSay("网络错误", "bad"); });
   };
 

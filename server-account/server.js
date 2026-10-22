@@ -376,6 +376,28 @@ function normalizeUpstreamBase(input) {
   if (!u.hostname) return { ok: false, error: "缺少主机名" };
   return { ok: true, base: (u.origin + u.pathname).replace(/\/+$/, ""), insecure: u.protocol === "http:" };
 }
+/** 把上游地址拆成「管理根」与「OpenAI 基址」（10-22 用户实测踩到的坑）：
+ *  管理员按网关文档填 `https://host/v1`，而目录端点 `/api/model-catalog` 挂在**根**上；
+ *  直接 `base + path` 会拼成 `/v1/api/model-catalog`、`/v1/v1/models` —— 打到网关的 SPA
+ *  catch-all 拿回 **200 HTML**，于是面板显示「能连通，但没解析出列表」/ 同步报
+ *  `wbm-unreachable`（`.json()` 抛异常）。两个都填对才不会看运气。
+ *  · root   = 去掉结尾一层 `/v1`
+ *  · openai = 以 `/v1` 结尾就原样，否则补 `/v1` */
+function splitUpstreamBase(base) {
+  const b = String(base || "").trim().replace(/\/+$/, "");
+  return { root: b.replace(/\/v1$/i, ""), openai: /\/v1$/i.test(b) ? b : `${b}/v1` };
+}
+/** 从上游各种「模型列表」形状里取数组（实测存在四种以上，只认 `data` 会把 WBM 漏掉）：
+ *  顶层数组 / `{data:[]}` / `{models:[]}` / `{list:[]}` / `{items:[]}` / `{result:[]}` /
+ *  `{result:{data:[]}}` / `{data:{models:[]}}`。取不到就返回 null（由调用方给原因）。 */
+function modelsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return null;
+  const arr = (v) => (Array.isArray(v) ? v : null);
+  return arr(payload.data) || arr(payload.models) || arr(payload.list) || arr(payload.items)
+    || arr(payload.result) || arr(payload.result && payload.result.data) || arr(payload.result && payload.result.models)
+    || arr(payload.data && payload.data.models) || arr(payload.data && payload.data.list) || null;
+}
 /** 把 fetch 的异常翻译成人话（面板直接显示，管理员不必去翻服务器日志） */
 function classifyFetchError(error) {
   const msg = String((error && (error.name + ": " + error.message)) || error || "");
@@ -406,23 +428,26 @@ async function probeGet(base, probe, key, authHeader) {
     ? (authHeader === "x-api-key" ? { "X-API-Key": key } : { Authorization: `Bearer ${key}` })
     : {};
   try {
-    const r = await fetch(base + probe.path, { headers, signal: AbortSignal.timeout(8000) });
+    /* ⛔ probe.base：同一组探测里可能有两个不同的基址（目录在根、/models 在 /v1）——
+       10-22 之前全部用同一个 base 拼，填了 /v1 的地址必然两个都拼错。 */
+    const target = String(probe.base || base).replace(/\/+$/, "") + probe.path;
+    const r = await fetch(target, { headers, signal: AbortSignal.timeout(8000) });
     const text = await r.text().catch(() => "");
     let count = null;
     try {
       const j = JSON.parse(text);
-      if (Array.isArray(j && j.data)) count = j.data.length;         // OpenAI 形状
-      else if (Array.isArray(j && j.list)) count = j.list.length;     // WBM 形状
-      else if (Array.isArray(j && j.models)) count = j.models.length;
-      else if (Array.isArray(j && j.items)) count = j.items.length;
+      const rows = modelsFromPayload(j);
+      if (rows) count = rows.length;
     } catch { /* 非 JSON 不致命：能连通但格式不认 */ }
     return {
-      name: probe.name, path: probe.path, ok: r.ok, status: r.status,
+      name: probe.name, path: probe.path, optional: Boolean(probe.optional), ok: r.ok, status: r.status,
       ms: Date.now() - t0, count,
-      hint: r.ok ? (count == null && probe.wantList ? "能连通，但没解析出列表（端点存在、格式不同）" : "") : explainProbeStatus(r.status),
+      hint: r.ok
+        ? (count == null && probe.wantList ? "能连通，但返回的不是模型列表（多半是网关首页 / 登录页 HTML）" : "")
+        : explainProbeStatus(r.status),
     };
   } catch (error) {
-    return { name: probe.name, path: probe.path, ok: false, status: 0, ms: Date.now() - t0, count: null, hint: classifyFetchError(error) };
+    return { name: probe.name, path: probe.path, optional: Boolean(probe.optional), ok: false, status: 0, ms: Date.now() - t0, count: null, hint: classifyFetchError(error) };
   }
 }
 /** 一组探测里挑"最好的那个"：有模型数的优先，其次能连通的 */
@@ -433,6 +458,9 @@ function bestProbe(results) {
 const BUILTIN_PROXY_PATH = "/cloud-api/proxy/v1";
 /** 模型目录缓存时长（WBM 自己也有 5 分钟缓存；这里更宽，避免频繁拉） */
 const MODEL_SYNC_TTL_MS = 30 * 60_000;
+/* 10-22：最近一次目录同步失败原因 —— 管理员打开「模型管理」时直接显示，
+   不必先点一次「重新同步」才知道为什么是空的。成功即清空。 */
+let lastCatalogError = null;
 /* 目录里要**剔除**的模型 id：`auto` 由上游自动挑选模型，记账无法判断实际用了哪个
    （用户令「把 auto 模型去了，那个不好判断用了哪个模型」）。以后要屏蔽别的模型往这里加。 */
 const EXCLUDED_CATALOG_IDS = new Set(["auto"]);
@@ -1287,25 +1315,57 @@ const server = http.createServer(async (req, res) => {
       /* ⛔ 用 currentCatalogBase()（管理员可配），**不是** WBM_BASE 常量 ——
          否则"改了上游地址、点同步却还是拉旧地址"（配了没用，10-18 实测就是这个坑）。 */
       const catalogBase = currentCatalogBase();
-      if (!catalogBase) return { ok: false, error: "wbm-not-configured" };
+      if (!catalogBase) return { ok: false, error: "catalog-not-configured", message: "还没配置上游地址（或环境变量里没有）" };
       try {
         /* ⛔ 10-18：目录来源**不止 WBM**。用户实测：上游是 OpenAI 兼容网关 ——
            `/api/model-catalog` 返 **401**、而 `/v1/models` 有 50 个模型 ⇒ 必须能回落。
            ⛔ 两源统一映射成同一份 list；OpenAI 源**没有倍率** ⇒ 打 `creditsMissing` 标记，
               由面板提示「未设倍率（当前免费）」。⛔ 绝不猜一个默认倍率 —— 猜错就是多扣钱。 */
         const authKey = WBM_TOKEN || currentGatewayKey();
+        const headers = authKey ? { Authorization: `Bearer ${authKey}` } : {};
+        /* ⛔ 10-22 修三个实测坑（用户贴图：填 `https://cn.pptoken.cc` 明明 /v1/models 有 12 个模型，
+           面板仍报「同步失败：wbm-unreachable」）：
+           ① 地址里带 `/v1` 时，旧代码拼成 `/v1/api/model-catalog`、`/v1/v1/models` ⇒ 打到 catch-all
+              拿回 200 HTML，`.json()` 抛异常；
+           ② 旧代码把「200 但 body 不是 JSON」当成致命错误直接进 catch ⇒ **连 OpenAI 回落的门都没进**；
+           ③ 只认 `data` / `models` 两种形状。
+           现在：先按**根**拉管理目录，失败（含解析失败、抛异常）再按 `/v1` 拉 OpenAI 列表；
+           形状统一交给 modelsFromPayload；两条都拿不到才报错，并把每条的原因带回面板。 */
+        const { root, openai } = splitUpstreamBase(catalogBase);
+        const tried = [];
         let data = null;
-        let source = "wbm";
-        const wbmRes = await fetch(`${catalogBase}/api/model-catalog?realm=cn`, { headers: authKey ? { Authorization: `Bearer ${authKey}` } : {} });
-        if (wbmRes.ok) {
-          data = await wbmRes.json();
-        } else {
-          const oaRes = await fetch(`${catalogBase}/v1/models`, { headers: authKey ? { Authorization: `Bearer ${authKey}` } : {} });
-          if (!oaRes.ok) return { ok: false, error: `catalog-http-${wbmRes.status}/${oaRes.status}` };
-          data = await oaRes.json();
-          source = "openai";
+        let rows = null;
+        let source = "catalog";
+        try {
+          const res = await fetch(`${root}/api/model-catalog?realm=cn`, { headers });
+          if (!res.ok) tried.push(`/api/model-catalog HTTP ${res.status}`);
+          else {
+            const payload = await res.json().catch(() => null);
+            const got = modelsFromPayload(payload);
+            if (got) { data = payload; rows = got; source = "catalog"; }
+            else tried.push("/api/model-catalog 返回的不是模型列表");
+          }
+        } catch (error) {
+          tried.push(`/api/model-catalog ${classifyFetchError(error)}`);
         }
-        const rows = source === "openai" ? (data.data || data.models || []) : (data.models || []);
+        if (!rows) {
+          try {
+            const res = await fetch(`${openai}/models`, { headers });
+            if (!res.ok) tried.push(`/v1/models HTTP ${res.status}`);
+            else {
+              const payload = await res.json().catch(() => null);
+              const got = modelsFromPayload(payload);
+              if (got) { data = payload; rows = got; source = "openai"; }
+              else tried.push("/v1/models 返回的不是模型列表");
+            }
+          } catch (error) {
+            tried.push(`/v1/models ${classifyFetchError(error)}`);
+          }
+        }
+        if (!rows) {
+          lastCatalogError = { error: "catalog-unreachable", message: sanitize(`上游没给出模型列表：${tried.join(" · ")}`) };
+          return { ok: false, ...lastCatalogError };
+        }
         const list = rows.map((m) => {
           /* OpenAI 形状只有 id / object / created / owned_by：其余字段留空并标「缺倍率」 */
           if (source === "openai") {
@@ -1367,18 +1427,20 @@ const server = http.createServer(async (req, res) => {
         const ids = new Set(list.map((m) => m.id));
         db.modelCatalog = {
           syncedAt: Date.now(),
-          realm: source === "openai" ? "openai" : String(data.realm || "cn"),
+          realm: source === "openai" ? "openai" : String((data && data.realm) || "cn"),
           /* ⛔ 记下目录来源：面板据此提示「上游没给倍率，需手动填」（openai 源一定缺倍率） */
-          source: source === "openai" ? "openai-compat" : String(data.source_label || data.source || "wbm"),
+          source: source === "openai" ? "openai-compat" : String((data && (data.source_label || data.source)) || "catalog"),
           catalogSource: source,
           list,
           ...(prevAvail ? { available: prevAvail.filter((x) => ids.has(x)) } : {}),
         };
         persist();
+        lastCatalogError = null;
         return { ok: true, count: list.length, syncedAt: db.modelCatalog.syncedAt };
       } catch (error) {
         /* ⛔ 出错信息可能含 URL/凭据（fetch 的 TypeError 会把地址带进来）⇒ 必须脱敏 */
-        return { ok: false, error: "wbm-unreachable", message: sanitize(error && error.message) };
+        lastCatalogError = { error: "catalog-unreachable", message: sanitize(error && error.message) };
+        return { ok: false, ...lastCatalogError };
       }
     }
 
@@ -1753,6 +1815,9 @@ const server = http.createServer(async (req, res) => {
     /* ── 10-15 管理员模型管理：目录 + 每用户可用模型 + 倍率 ─────────────── */
     if (p === "/admin/models" && req.method === "GET") {
       if (!me || me.role !== "admin") return send(403, { ok: false, error: "需要管理员权限" });
+      /* 10-22 用户问「模型目录不是自动新增吗」：原来只有客户端 /models 与手动按钮会拉目录，
+         管理员打开本页看到的可能是几小时前的快照 ⇒ 这里按 TTL（默认 30 分钟）自动补一次。 */
+      const autoPulled = await pullModelCatalog(false).catch(() => null);
       const users = db.users.map((u) => ({
         username: u.username,
         role: u.role,
@@ -1764,6 +1829,9 @@ const server = http.createServer(async (req, res) => {
         available: Array.isArray(db.modelCatalog.available) ? db.modelCatalog.available : null,
         syncedAt: db.modelCatalog.syncedAt || 0,
         source: db.modelCatalog.source || "",
+        autoSynced: Boolean(autoPulled && autoPulled.ok),
+        syncError: lastCatalogError ? lastCatalogError.error : "",
+        syncMessage: lastCatalogError ? lastCatalogError.message : "",
         users,
       });
     }
@@ -2223,11 +2291,15 @@ const server = http.createServer(async (req, res) => {
       if (!norm.ok) return send(400, { ok: false, error: norm.error });
       const key = String(body && body.gatewayKey || "").trim() || currentGatewayKey();
       const started = Date.now();
-      /* 依次探测：WBM 专有目录端点 → OpenAI 兼容 /v1/models。
-         命中哪个就说明这个地址属于哪一类 —— 管理员据此决定"要不要单独填目录同步地址"。 */
+      /* 依次探测：管理目录（挂在**根**上）→ OpenAI 兼容 /models（挂在 /v1 下）。
+         ⛔ 10-22：地址带不带 `/v1` 都能测（splitUpstreamBase 给出两个基址，避免拼成
+            `/v1/api/...`、`/v1/v1/models` 打到 SPA catch-all 拿 200 HTML）；
+         ⛔ 普通网关没有 `/api/model-catalog` 是**正常**的 ⇒ 这一行标 optional，
+            另一行通了就显示「未提供（可选）」，不再打红叉吓人。 */
+      const { root, openai } = splitUpstreamBase(norm.base);
       const probes = [
-        { name: "模型目录（WBM）", path: "/api/model-catalog?realm=cn", wantList: true },
-        { name: "OpenAI 兼容 /v1/models", path: "/v1/models", wantList: true },
+        { name: "管理目录（/api/model-catalog）", path: "/api/model-catalog?realm=cn", base: root, wantList: true, optional: true },
+        { name: "OpenAI 兼容 /v1/models", path: "/models", base: openai, wantList: true },
       ];
       const results = [];
       for (const probe of probes) results.push(await probeGet(norm.base, probe, key, "bearer"));
