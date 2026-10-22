@@ -1368,7 +1368,7 @@ const server = http.createServer(async (req, res) => {
           }
         }
         if (!rows) {
-          lastCatalogError = { error: "catalog-unreachable", message: sanitize(`上游没给出模型列表：${tried.join(" · ")}`) };
+          lastCatalogError = { error: "catalog-unreachable", base: catalogBase, message: sanitize(`上游 ${catalogBase} 没给出模型列表：${tried.join(" · ")}`) };
           return { ok: false, ...lastCatalogError };
         }
         const list = rows.map((m) => {
@@ -1837,6 +1837,9 @@ const server = http.createServer(async (req, res) => {
         autoSynced: Boolean(autoPulled && autoPulled.ok),
         syncError: lastCatalogError ? lastCatalogError.error : "",
         syncMessage: lastCatalogError ? lastCatalogError.message : "",
+        /* ⛔ 必须是 currentCatalogBase()（本作用域没有 catalogBase —— 那是 pullModelCatalog 的局部量）；
+           面板据此显示「到底在从哪个地址拉目录」，不然报错只说「没给出列表」，排查无从下手。 */
+        catalogBase: currentCatalogBase(),
         users,
       });
     }

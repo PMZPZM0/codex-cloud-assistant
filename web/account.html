@@ -646,6 +646,8 @@
         · 你改过的模型会标「<b>已钉</b>」——<b>同步目录不会再覆盖你的值</b>；点「恢复上游」回到上游倍率。<br>
         · 没改过的模型显示上游倍率，上游调价时<b>自动跟随</b>。
       </p>
+      <!-- 10-22：把「到底从哪个地址、哪个来源拉的目录」摊开 —— 报错只说「没给出列表」时无从排查。 -->
+      <p class="hint" id="amSource"></p>
       <!-- 闲时时段编辑区：默认折叠（标题行「设置」展开）。⛔ 只定义时间，倍率在下面表格里按模型填。 -->
       <div id="opEditor" style="display:none">
         <p class="hint" style="margin:0 0 8px">
@@ -1893,6 +1895,11 @@
     api("/admin/models").then(function (r) {
       if (!r.ok || !r.j || !r.j.ok) { amSay("模型目录读取失败：" + ((r.j && r.j.error) || r.status), "bad"); return; }
       amData = r.j;
+      /* 10-22：显示「目录来源 + 实际上游地址 + 上次同步时间」，同步失败时一眼看出拉的是哪个地址。 */
+      if ($("amSource")) {
+        $("amSource").textContent = "目录来源：" + (r.j.source || "未同步") + " · 上游：" + (r.j.catalogBase || "未配置")
+          + (r.j.syncedAt ? " · 上次同步 " + new Date(r.j.syncedAt).toLocaleString() : "");
+      }
       /* 10-22：目录空且最近一次同步失败 ⇒ 直接把原因说出来（原来只显示空表，管理员以为「没模型」）。 */
       if (!(r.j.list || []).length && r.j.syncError) {
         amSay("模型目录为空：" + (r.j.syncMessage || r.j.syncError) + "（到「上游 API」点「测试连通性」核对地址与密钥）", "bad");
