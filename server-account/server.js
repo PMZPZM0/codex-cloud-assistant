@@ -1361,8 +1361,8 @@ const server = http.createServer(async (req, res) => {
             if (!res.ok) { tried.push(`${candidate.name} HTTP ${res.status}`); continue; }
             const payload = await res.json().catch(() => null);
             const got = modelsFromPayload(payload);
-            if (got) { data = payload; rows = got; source = /v1\/models|\/models$/i.test(candidate.url) ? "openai" : "catalog"; break; }
-            tried.push(`${candidate.name} 返回的不是模型列表`);
+            if (got && got.length) { data = payload; rows = got; source = /v1\/models|\/models$/i.test(candidate.url) ? "openai" : "catalog"; break; }
+            tried.push(`${candidate.name} 返回的不是模型列表${got ? "（空列表）" : ""}`);
           } catch (error) {
             tried.push(`${candidate.name} ${classifyFetchError(error)}`);
           }
@@ -2313,22 +2313,29 @@ const server = http.createServer(async (req, res) => {
       const probes = catalogCandidates(norm.base).map((c) => ({ name: c.name, url: c.url, wantList: true, optional: true }));
       const results = [];
       for (const probe of probes) results.push(await probeGet(norm.base, probe, key, "bearer"));
-      const best = bestProbe(results);
-      console.log(`[upstream] ${me.username} 连通性测试 ${norm.base} → ${best ? "连通" : "不可达"}（${results.map((x) => `${x.status || "ERR"}@${x.ms}ms`).join(" / ")}）`);
+      /* ⛔ 10-22「上面识别出来了，下面自动更新啊」——用户把绿色 ✓ 当成"识别成功"，
+         但那三行其实是「HTTP 200 + 返回网页」，一个模型都没解析出来。
+         ⇒ 结论必须分三档：① 真拿到列表（recognized）② 能连通但读不到列表 ③ 完全不通。
+         只有第 ① 档才算成功；第 ② 档给⚙️ 可复制的下一步（多半是地址填成了控制台首页）。 */
+      const modelProbe = results.find((x) => x.ok && x.count != null) || null;
+      const reachable = results.find((x) => x.ok) || null;
+      console.log(`[upstream] ${me.username} 连通性测试 ${norm.base} → ${modelProbe ? `识别 ${modelProbe.count} 个模型` : reachable ? "能连通但读不到列表" : "不可达"}（${results.map((x) => `${x.status || "ERR"}@${x.ms}ms`).join(" / ")}）`);
       return send(200, {
-        ok: Boolean(best),
+        ok: Boolean(reachable),
+        recognized: Boolean(modelProbe),
         base: norm.base,
         insecure: norm.insecure,
         warning: norm.insecure ? "http 明文传输：仅建议内网使用" : "",
         hasKey: Boolean(key),
         elapsedMs: Date.now() - started,
-        /* 只把「没连通时」需要的失败明细带全；连通时前端只渲染成功的那行 */
         probes: results,
-        modelCount: best && best.count != null ? best.count : null,
-        modelSource: best ? best.name : "",
-        message: best
-          ? `连通：${best.name}${best.count != null ? `，${best.count} 个模型` : ""}（${best.ms}ms）`
-          : "不可达：候选端点都不通 —— 看下面每一行的原因",
+        modelCount: modelProbe ? modelProbe.count : null,
+        modelSource: modelProbe ? modelProbe.name : "",
+        message: modelProbe
+          ? `连通：${modelProbe.name}，${modelProbe.count} 个模型（${modelProbe.ms}ms）`
+          : reachable
+            ? `能连通，但读不到模型列表：这些地址返回的是网页/重定向（多为控制台首页或登录页），不是模型 API。请把地址填到 API 根，例如 https://你的域名/v1 或 https://你的域名/claude-code/default。`
+            : "不可达：候选端点都不通 —— 看下面每一行的原因",
       });
     }
     /* ── 知识库 / 记忆空间上游（10-18 用户令「为知识库和记忆空间预留可配置的接口」）────
