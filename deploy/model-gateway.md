@@ -244,6 +244,44 @@ kb.<域名>  { reverse_proxy 127.0.0.1:80 }
 sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
 ```
 
+#### 3.5.1 压缩与缓存（不配的话面板打开会很慢）
+
+记忆面板 / 知识库后台都是**单页应用**，主 JS 打包后接近 2 MB。反代默认**不压缩代理响应**，
+第一次打开要下完整个包（实测 5~6 s，浏览器一片白），第二次也没有缓存。
+
+Caddy 每站点加一行即可（本项目 `Caddyfile.example` 已带）：
+
+```caddyfile
+mem.<域名> {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8125
+}
+```
+
+nginx 要三件事一起做（缺一样都不生效，实测挨个踩过）：
+
+```nginx
+# http {}
+gzip on;
+gzip_vary on;
+gzip_proxied any;              # ⛔ 不开这个，经代理回来的 js/css 一律不压
+gzip_comp_level 5;
+gzip_min_length 1024;
+gzip_types text/plain text/css text/javascript text/xml
+           application/javascript application/json image/svg+xml;
+
+server {
+    # 产物文件名带内容 hash ⇒ 可以永久缓存
+    location /assets/ {
+        proxy_pass http://127.0.0.1:8125;
+        proxy_buffering on;    # ⛔ 外层若写了 proxy_buffering off，这里必须打开，否则 gzip 不生效
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+}
+```
+
+效果（客户机实测）：1.95 MB → **485 KB**，首屏 5.9 s → 1.9 s；第二次打开走缓存≈0.2 s。
+
 ### 3.6 客户端配置
 
 | 项 | 值 | 说明 |
