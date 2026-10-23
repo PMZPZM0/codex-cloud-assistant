@@ -220,6 +220,14 @@ sudo systemctl restart codex-cloud-admin
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8091/    # 期望 200
 ```
 
+**新用户默认值**（注册赠分 / 云存储）有两级来源：
+
+| 层 | 在哪改 | 说明 |
+|---|---|---|
+| 兜底 | `config.env` 的 `HARNESS_SIGNUP_POINTS`（默认 1000）、`HARNESS_STORAGE_LIMIT`（默认 1 GB） | 改完要重启服务 |
+| 运行期 | 管理端「用户管理中心 → 新用户默认额度」 | **改完立刻生效**，存在 `data.json.policy`，优先于环境变量；「恢复环境默认」= 删掉这两条覆盖 |
+| 单人 | 用户表格里「云存储（GB）」那一列 | 留空 = 跟默认值走 |
+
 ### 3.5 反代（四条路由）
 
 模板在 **`deploy/Caddyfile.example`**，替换域名即可：
