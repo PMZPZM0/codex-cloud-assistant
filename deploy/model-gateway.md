@@ -290,6 +290,28 @@ server {
 
 效果（客户机实测）：1.95 MB → **485 KB**，首屏 5.9 s → 1.9 s；第二次打开走缓存≈0.2 s。
 
+#### 3.5.2 控制台 logo / 站点图标（两台品牌不同）
+
+控制台侧栏的 logo 和浏览器标签页图标**取同一张图**：`GET /api/favicon`（公开端点）。
+包内自带两套图标，用环境变量选前缀：
+
+| 部署 | 品牌 | `HARNESS_FAVICON_PREFIX` | 用的文件 |
+|---|---|---|---|
+| 自建主站 | Codex Harness | 不设（默认 `favicon`） | `favicon-32/64/256.png` |
+| 客户机 | PPcode | `pp-favicon` | `pp-favicon-32/64/256.png` |
+
+```ini
+# config.env
+HARNESS_FAVICON_PREFIX=pp-favicon
+```
+
+`?size=64|256` 可取大图（侧栏用 256，高 DPI 不糊）；其余值一律回 32。
+`HARNESS_WEB_DIR` 不设时按顺序找：`<server.js>/../web` → `/var/www/codex-harness-cloud`。
+
+⛔ **不要直接覆盖 `favicon-*.png` 来换品牌** —— 这几个文件在自更新清单里，
+下次「一键更新」会被冲回默认品牌。管理员后台上传的自定义图标（`data/branding/favicon.*`）
+优先级最高，不受影响。
+
 **WorkBuddy Manager（可选组件）必须两件一起装** —— 面板本身只是一个「壳」：
 
 | 组件 | 镜像 | 作用 |
