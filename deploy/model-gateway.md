@@ -290,14 +290,49 @@ server {
 
 效果（客户机实测）：1.95 MB → **485 KB**，首屏 5.9 s → 1.9 s；第二次打开走缓存≈0.2 s。
 
-**WorkBuddy Manager（可选组件）也必须走同一条路**：
+**WorkBuddy Manager（可选组件）必须两件一起装** —— 面板本身只是一个「壳」：
+
+| 组件 | 镜像 | 作用 |
+|---|---|---|
+| 面板 | `ghcr.io/ithtelab/workbuddy-manager` | 扫码纳管、密钥分发、用量统计（**不含推理**） |
+| 上游 | `ghcr.io/ithtelab/workbuddy2api` | 真正的账号池 + OpenAI 兼容反代（默认 `:7863`） |
+
+只装面板的现象就是：页面能开、模型列表有 20 个，但一说话就报 **`上游不可用：All connection attempts failed`**
+（面板去连 `127.0.0.1:7863`，那里没人）。
 
 ```bash
-# ⛔ 只绑回环；写成 -p 7864:7864 等于把面板裸奔在公网上（登录锁定 / 来源 IP 管控失效）
-docker run -d --name workbuddy-manager --restart unless-stopped \
+# 0) 共享目录：账号凭证由面板写入、上游读取 ⇒ 必须同一个卷，⛔ 别只放在某一个容器里
+mkdir -p /opt/workbuddy2api/{auths,data}
+cp <发布包>/upstream/config.example.json /opt/workbuddy2api/config.json   # 再把 api_key 改随机
+chown -R 10001:10001 /opt/workbuddy2api
+
+docker network create wbm-net 2>/dev/null || true
+
+# 1) 上游（账号池 / 反代）
+docker run -d --name workbuddy2api --restart unless-stopped --network wbm-net \
+  -p 127.0.0.1:7863:7863 \
+  -v /opt/workbuddy2api/auths:/app/auths \
+  -v /opt/workbuddy2api/data:/app/data \
+  -v /opt/workbuddy2api/config.json:/app/config.json:ro \
+  ghcr.io/ithtelab/workbuddy2api:latest
+
+# 2) 面板（⛔ 只绑回环；-p 7864:7864 等于裸奔在公网）
+docker run -d --name workbuddy-manager --restart unless-stopped --network wbm-net \
   -p 127.0.0.1:7864:7864 -e WB_ADMIN_PASSWORD="$PW" \
-  -v /opt/workbuddy-manager/data:/app/data ghcr.io/ithtelab/workbuddy-manager:latest
+  -e WB2API_BASE=http://workbuddy2api:7863 \
+  -e WB_AUTH_DIR=/opt/workbuddy2api/auths \
+  -e WB_UPSTREAM_CONFIG=/opt/workbuddy2api/config.json \
+  -v /opt/workbuddy-manager/data:/app/data \
+  -v /opt/workbuddy2api:/opt/workbuddy2api \
+  ghcr.io/ithtelab/workbuddy-manager:latest
+
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7863/healthz   # 期望 200
 ```
+
+⛔ 两个容器必须同一个 docker 网络：面板里 `127.0.0.1:7863` 指的是**它自己**，走不通；
+要用容器名 `http://workbuddy2api:7863`（上面 `WB2API_BASE` 已经这么写）。
+⛔ 账号文件在 `auths/`，**面板重建不会丢**的前提是它挂在宿主机目录上（上面已挂），
+否则只存在容器可写层里，`docker rm` 一次就没了。
 
 再在反代上加一个源（`https://<域名>:7865` → `127.0.0.1:7864`，带 `encode`/`gzip` + `/assets` 缓存），
 并把管理端「WorkBuddy Manager → 对外地址」填成这个 HTTPS 地址 —— 之后「打开面板」走反代、免密票据也在同源。
