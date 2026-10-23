@@ -1,0 +1,106 @@
+{
+  "version": "1.5.66",
+  "releasedAt": "2026-10-23",
+  "repo": "PMZPZM0/codex-harness-cloud-src",
+  "notes": "发版清单：改这里就够，脚本与服务端都读它（不再硬编码文件列表）。",
+  "files": [
+    {
+      "src": "cloud/VERSION",
+      "kind": "server",
+      "as": "VERSION",
+      "sha256": "dbb0d421be353e0059561201bcf6c473108296e8cac9579fd589ea74c8367204",
+      "bytes": 7
+    },
+    {
+      "src": "cloud/server-account/server.js",
+      "kind": "server",
+      "as": "server.js",
+      "sha256": "3781862e0729647be289bd934e182b844a2f93ef7169cee1dc770d7e03261fc3",
+      "bytes": 360478
+    },
+    {
+      "src": "cloud/web/account.html",
+      "kind": "web",
+      "as": "account.html",
+      "sha256": "47b0264cde9fbaa0ad000a52e78481b258936cd92f40c925004c4ae363c7e6e7",
+      "bytes": 401809
+    },
+    {
+      "src": "cloud/web/index.html",
+      "kind": "web",
+      "as": "index.html",
+      "sha256": "563acddebffe06f901a4aa5cb050846344001b04665eccd2f841b55f9962e93f",
+      "bytes": 52604
+    },
+    {
+      "src": "cloud/web/app.js",
+      "kind": "web",
+      "as": "app.js",
+      "sha256": "b50b4d909fcd3105ef889d4f10558afccc4e47dab68c4e5dd614444c52d24cd0",
+      "bytes": 55324
+    },
+    {
+      "src": "cloud/web/styles.css",
+      "kind": "web",
+      "as": "styles.css",
+      "sha256": "a89672f56024051699a5a36695c6b9bc872d0aca7f00c6bdd400a84caafb0a34",
+      "bytes": 20628
+    },
+    {
+      "src": "cloud/web/admin.html",
+      "kind": "web",
+      "as": "admin.html",
+      "sha256": "223463ccc92828dbe28cdf4a0eb116b6dcf70812050c9a9cfa8923fc2ce76cd7",
+      "bytes": 28095
+    },
+    {
+      "src": "cloud/web/fnos-guide.html",
+      "kind": "web",
+      "as": "fnos-guide.html",
+      "sha256": "184982ee67726953df71050c04014bd682de42919bdb970d3182a369a2577b7a",
+      "bytes": 12740
+    },
+    {
+      "src": "cloud/web/favicon-32.png",
+      "kind": "web",
+      "as": "favicon-32.png",
+      "sha256": "1ccc41f8c4e1321a18ce3f081268edde1c25c24c0178792c54ae2081d081c94d",
+      "bytes": 1937
+    },
+    {
+      "src": "cloud/web/favicon-64.png",
+      "kind": "web",
+      "as": "favicon-64.png",
+      "sha256": "faf5575d81208c5d557dd543c3b1a7739be31121eb662145512022ea04caa99b",
+      "bytes": 5280
+    },
+    {
+      "src": "cloud/web/favicon-256.png",
+      "kind": "web",
+      "as": "favicon-256.png",
+      "sha256": "3b7023e4858a6dd9ba8559b901f83f546f6316140af62ced20ed67dc7440ab7f",
+      "bytes": 40684
+    },
+    {
+      "src": "cloud/web/pp-favicon-32.png",
+      "kind": "web",
+      "as": "pp-favicon-32.png",
+      "sha256": "391bcc6d0407efa63b12e3adcc39767a3c7724699d0a18ae44421b75892197b6",
+      "bytes": 2295
+    },
+    {
+      "src": "cloud/web/pp-favicon-64.png",
+      "kind": "web",
+      "as": "pp-favicon-64.png",
+      "sha256": "1adcd35110dec6a8ba1c0d23c6ce1996e1dfe562d05c1b28fce4d33b11b9d7c0",
+      "bytes": 6916
+    },
+    {
+      "src": "cloud/web/pp-favicon-256.png",
+      "kind": "web",
+      "as": "pp-favicon-256.png",
+      "sha256": "2fd3c904c16d479e324c440aacdd2f82782b0611feb72f31dba376b61aca9d33",
+      "bytes": 60202
+    }
+  ]
+}
