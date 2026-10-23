@@ -184,6 +184,20 @@ curl -s -X POST $BASE/api/v1/mcp-endpoints -H "X-API-Key: $KEY" \
 
 第 2 步返回里的 `token` 就是客户端要用的凭据，端点地址是 `http://<host>:8080/mcp/<endpointId>`。
 
+#### 3.3.1 让「打开后台」免密（一次点一下就够）
+
+知识库是**账号密码**制（`POST /api/v1/auth/login`），租户 API Key 换不出 JWT，所以云管理里
+「知识库管理中心 → 后台免密登录 → **一键生成后台账号**」会用你填的那把 API Key 自助开一个
+专属账号：`POST /tenants/{id}/invite-links {role:"admin"}` → `POST /auth/register-by-invite`。
+建出来的账号**落在原空间、角色 admin**，所以面板里看到的还是原来那些库。
+
+前提只有一个：知识库的「注册方式」不能是**仅邀请（invite_only）** —— 这个模式连邀请链接也拒。
+在 WeKnora 后台（`平台设置 → 注册方式`）改成「仅邀请链接注册」或「开放注册」即可；
+不想改的话就在那张卡里手填一组已有账号，效果一样。
+
+> 面板地址是**前端端口**（`:80` / `:8080` 是 API）。云管理里的 `kb.uiBase` 留空时会按 8080→8081 推导，
+> 反代成 `https://kb.<域名>` 的部署请把它显式填成 `https://kb.<域名>`。
+
 ### 3.4 云管理（本仓）
 
 ```bash
