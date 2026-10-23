@@ -290,6 +290,18 @@ server {
 
 效果（客户机实测）：1.95 MB → **485 KB**，首屏 5.9 s → 1.9 s；第二次打开走缓存≈0.2 s。
 
+**WorkBuddy Manager（可选组件）也必须走同一条路**：
+
+```bash
+# ⛔ 只绑回环；写成 -p 7864:7864 等于把面板裸奔在公网上（登录锁定 / 来源 IP 管控失效）
+docker run -d --name workbuddy-manager --restart unless-stopped \
+  -p 127.0.0.1:7864:7864 -e WB_ADMIN_PASSWORD="$PW" \
+  -v /opt/workbuddy-manager/data:/app/data ghcr.io/ithtelab/workbuddy-manager:latest
+```
+
+再在反代上加一个源（`https://<域名>:7865` → `127.0.0.1:7864`，带 `encode`/`gzip` + `/assets` 缓存），
+并把管理端「WorkBuddy Manager → 对外地址」填成这个 HTTPS 地址 —— 之后「打开面板」走反代、免密票据也在同源。
+
 ### 3.6 客户端配置
 
 | 项 | 值 | 说明 |
