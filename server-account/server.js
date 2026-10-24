@@ -4181,20 +4181,14 @@ const server = http.createServer(async (req, res) => {
   }
   /** 汇总：可用 = 配额剩余 + 余额；monthUsed = 本期消耗合计（含退款冲回）。 */
   function teamPointsSummary(teamId) {
-    const q = teamQuotaOf(teamId);
-    const period = q.period || teamPeriod(Date.now());
-    const map = db.teamPointsLedger[teamId] || {};
-    let monthUsed = 0;
-    Object.values(map).forEach((x) => {
-      if (!x) return;
-      if (String(x.kind) !== "consume" && String(x.kind) !== "refund") return;
-      if (String(x.period || "") !== period) return;
-      /* ⛔ 月中重新开通/升级会把 used 清零，若 monthUsed 仍按整月累计，页面会出现
-         「本月已用 10055 / 配额 5000 却还剩 5000」的自相矛盾（实测）。以本期起点为界。 */
-      if (q.startedAt && Number(x.at || 0) < Number(q.startedAt)) return;
-      /* ⛔ 配额消耗不写负数 delta（否则余额被双重扣），用 quotaCost 记量；退款为负值冲回。 */
-      monthUsed += (Number(x.quotaCost) || 0) + (-Number(x.delta) || 0);
-    });
+    /* ⛔⛔ 10-24 审查改：`monthUsed` 不再自己遍历一遍账本 —— 直接取 `teamUsageScan` 的本期累计。
+       原先两处各写一套「同期 + 本期起点之后」的过滤，改口径时只要漏一处，
+       页面马上回到「已用 ×× 却剩满额」的自相矛盾（这条已经在 10-24 踩过一次）。
+       这里只求和、不排序：模型代理每个请求都会走到这里，排序是纯浪费。 */
+    const scan = teamUsageScan(teamId);
+    const q = scan.q;
+    const period = scan.period;
+    const monthUsed = Math.round(Object.values(scan.cur).reduce((n, x) => n + (Number(x.cost) || 0), 0) * 100) / 100;
     const quotaLeft = Math.max(0, Number(q.total || 0) - Number(q.used || 0));
     const balanceRaw = teamBalanceOf(teamId);
     const balance = Math.max(0, balanceRaw);
@@ -4207,6 +4201,46 @@ const server = http.createServer(async (req, res) => {
       quota: { period, total: Number(q.total || 0), used: Number(q.used || 0), left: quotaLeft },
       balance, monthUsed: Math.max(0, monthUsed),
       lowBalanceWarn: teamPolicyRaw().lowBalanceWarn,
+    };
+  }
+  /** 扫一遍账本，按成员累计 —— **唯一的消耗口径**（同期 + 本期起点之后）。
+      ⛔ 只做累加、不排序不分配展示对象：模型代理每个请求都要取 `available`，
+      在热路径上做 O(n log n) 排序是白费（见 `teamPointsSummary`）。
+      `all` 只作历史参考（配额重置/重新开通之前的账），不参与任何闸门判断。 */
+  function teamUsageScan(teamId) {
+    const q = teamQuotaOf(teamId);
+    const period = q.period || teamPeriod(Date.now());
+    const map = db.teamPointsLedger[teamId] || {};
+    const cur = {};
+    const all = {};
+    Object.values(map).forEach((x) => {
+      if (!x) return;
+      if (String(x.kind) !== "consume" && String(x.kind) !== "refund") return;
+      /* 退款是负值冲回，用同一个算式（quotaCost + -delta）自然抵减，不单独分支。 */
+      const cost = (Number(x.quotaCost) || 0) + (-Number(x.delta) || 0);
+      /* 旧流水 actor 为空（10-24 续 12 之前没记成员）⇒ 明确标成「未记录」，不静默归到某个人。 */
+      const actor = String(x.actor || "").trim() || "(未记录)";
+      const a = all[actor] || (all[actor] = { actor, cost: 0, count: 0 });
+      a.cost += cost; a.count += 1;
+      if (String(x.period || "") !== period) return;
+      if (q.startedAt && Number(x.at || 0) < Number(q.startedAt)) return;
+      const b = cur[actor] || (cur[actor] = { actor, cost: 0, count: 0 });
+      b.cost += cost; b.count += 1;
+    });
+    return { q, period, cur, all };
+  }
+  /** 按成员汇总消耗（展示用）—— 回答「这个共享池里谁在烧钱」。 */
+  function teamMemberUsageOf(teamId) {
+    const s = teamUsageScan(teamId);
+    const list = (o) => Object.values(o)
+      .map((v) => ({ actor: v.actor, cost: Math.round(v.cost * 100) / 100, count: v.count }))
+      .sort((a, b) => b.cost - a.cost || String(a.actor).localeCompare(String(b.actor)));
+    return {
+      period: s.period,
+      /* 起点暴露给前端：本期为空时能解释「为什么 0」——不是没消耗，是本期重新开始计时。 */
+      startedAt: Number(s.q.startedAt || 0),
+      periodList: list(s.cur),
+      allList: list(s.all),
     };
   }
   /** 扣费：先配额、后余额。⛔ 判定与写入之间没有 await（Node 单线程 ⇒ 原子）。
@@ -4224,11 +4258,11 @@ const server = http.createServer(async (req, res) => {
     const n = isModel ? Math.max(0, two(qty)) : Math.max(1, Math.ceil(Number(qty) || 1));
     const cost = unit > 0 ? (isModel ? two(n * unit) : Math.max(1, Math.ceil(n * unit))) : 0;
     const r = String(ref || (scene + ":" + teamId + ":" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)));
-    if (!cost) return { ok: true, cost: 0, quotaPart: 0, poolPart: 0, ref: r };
+    if (!cost) return { ok: true, cost: 0, quotaPart: 0, poolPart: 0, ref: r, actor: String(actor || "") };
     const map = (db.teamPointsLedger[teamId] = db.teamPointsLedger[teamId] || {});
     const dup = Object.values(map).filter((x) => x && x.ref === r);
     if (dup.length) {
-      return { ok: true, cost: dup.reduce((s2, x) => s2 + Math.abs(Number(x.delta || 0)) + Number(x.quotaCost || 0), 0), quotaPart: 0, poolPart: 0, duplicate: true, ref: r };
+      return { ok: true, cost: dup.reduce((s2, x) => s2 + Math.abs(Number(x.delta || 0)) + Number(x.quotaCost || 0), 0), quotaPart: 0, poolPart: 0, duplicate: true, ref: r, actor: String(actor || "") };
     }
     const q = teamQuotaOf(teamId);
     const quotaLeft = Math.max(0, Number(q.total || 0) - Number(q.used || 0));
@@ -4256,7 +4290,10 @@ const server = http.createServer(async (req, res) => {
       actor: String(actor || ""), period,
     };
     persist();
-    return { ok: true, cost, quotaPart, poolPart, overdraft: negative, ref: r, scene: String(scene), available: teamPointsSummary(teamId).available };
+    /* actor 一并带出：退费要按原路归属到**发起者**，不能全记成 system（成员看不到自己的退还）。 */
+    /* period / at 一并带出：退款必须落回**原账期**（10-24 审查），否则跨月或在途期间被
+       重新开通套餐时，退款会去减新一期的配额（钱对、配额账错，页面出现负的「本期已用」）。 */
+    return { ok: true, cost, quotaPart, poolPart, overdraft: negative, ref: r, scene: String(scene), actor: String(actor || ""), period, at: Date.now(), available: teamPointsSummary(teamId).available };
   }
   /** 退费：按原路退回（配额恢复 used、余额加回）。幂等：同 ref 已退则跳过。 */
   function teamRefund(teamId, charge, reason) {
@@ -4264,18 +4301,25 @@ const server = http.createServer(async (req, res) => {
     const map = (db.teamPointsLedger[teamId] = db.teamPointsLedger[teamId] || {});
     const rref = String(charge.ref || "") + ":refund";
     if (Object.values(map).some((x) => x && x.ref === rref)) return false;
-    const period = teamPeriod(Date.now());
+    /* ⛔ 10-24 审查：退款要落回**扣费时那一期**（`charge.period`），不能按「现在」算。
+       否则跨月、或扣费请求在途期间被重新开通/升级套餐（配额 used 归零、起点后移）时，
+       退款会把**新一期**的配额减掉：钱退对了，配额账错，页面还会出现负的「本期已用」。
+       判定「同一窗口」= 同期 + 扣费时间在新起点之后；不满足时只退余额部分，
+       配额部分已随窗口过期（`note` 里写明，账上看得见）。 */
+    const q = teamQuotaOf(teamId);
+    const period = String(charge.period || "") || teamPeriod(Date.now());
+    const sameWindow = period === (q.period || teamPeriod(Date.now()))
+      && (!q.startedAt || Number(charge.at || 0) >= Number(q.startedAt));
     const quotaPart = Math.max(0, Number(charge.quotaPart) || 0);
     const poolPart = Math.max(0, Number(charge.poolPart) || 0);
-    if (quotaPart > 0) {
-      const q = teamQuotaOf(teamId);
-      q.used = Math.max(0, Number(q.used || 0) - quotaPart);
-    }
+    const keepQuota = quotaPart > 0 && sameWindow;
+    if (keepQuota) q.used = Math.max(0, Number(q.used || 0) - quotaPart);
     const id = "TR" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
     map[id] = {
-      id, at: Date.now(), delta: poolPart > 0 ? poolPart : 0, quotaCost: quotaPart > 0 ? -quotaPart : 0,
+      id, at: Date.now(), delta: poolPart > 0 ? poolPart : 0, quotaCost: keepQuota ? -quotaPart : 0,
       kind: "refund", scene: String(charge.scene || ""), ref: rref,
-      note: String(reason || "上游失败退分"), actor: "system", period,
+      note: String(reason || "上游失败退分") + (quotaPart > 0 && !sameWindow ? "（配额已过窗口，" + quotaPart + " 点不退回）" : ""),
+      actor: String((charge && charge.actor) || "system"), period,
     };
     persist();
     return true;
@@ -4893,6 +4937,8 @@ const server = http.createServer(async (req, res) => {
       /* 兼容旧字段（balance / rows），新增汇总（available / quota / monthUsed / lowBalanceWarn） */
       balance: summary.balance, rows: pool.rows, entitlements: teamEntitlementsOf(teamId),
       available: summary.available, quota: summary.quota, monthUsed: summary.monthUsed,
+      /* 10-24：成员消耗汇总（共享池「谁在烧钱」）——口径与 monthUsed 同源，见 teamMemberUsageOf */
+      byMember: teamMemberUsageOf(teamId),
       lowBalanceWarn: summary.lowBalanceWarn, pointsEnabled: teamPolicyRaw().pointsEnabled,
     });
   }
@@ -5257,14 +5303,18 @@ const server = http.createServer(async (req, res) => {
     if (!charge.ok) {
       return send(402, { ok: false, error: charge.error, need: charge.need, available: charge.available, message: "团队积分不足，写入/检索被拒绝" });
     }
-    /* 单价为 0 时也留一条计数行（后台能看到"谁在用、用了多少"，将来改价有基线） */
+    /* 单价为 0 时也留一条计数行（后台能看到"谁在用、用了多少"，将来改价有基线）。
+       ⛔ 10-24 审查：这条路径原先**没有幂等判定** —— 客户端重试同一个 ref 会一次次写计数行
+       （扣费的路径有 dup 检查，免费路径漏了）。同 ref 已存在就不重复记。 */
     if (!charge.cost) {
       const map = (db.teamPointsLedger[teamId] = db.teamPointsLedger[teamId] || {});
-      const id = "TM" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
-      const period = teamPeriod(Date.now());
-      map[id] = { id, at: Date.now(), delta: 0, quotaCost: 0, kind: "consume", scene, ref,
-        note: scene + " 计量 " + qty + " 次（单价 0，免费）", actor: who.username, period };
-      persist();
+      if (!Object.values(map).some((x) => x && String(x.ref || "") === ref)) {
+        const id = "TM" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+        const period = teamPeriod(Date.now());
+        map[id] = { id, at: Date.now(), delta: 0, quotaCost: 0, kind: "consume", scene, ref,
+          note: scene + " 计量 " + qty + " 次（单价 0，免费）", actor: who.username, period };
+        persist();
+      }
     }
     console.log("[team] " + who.username + " 上报 " + scene + " ×" + qty + "（团队 " + teamId + "，扣 " + charge.cost + "）");
     return send(200, { ok: true, cost: charge.cost, duplicate: Boolean(charge.duplicate), points: teamPointsSummary(teamId) });
