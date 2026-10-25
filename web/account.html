@@ -3027,7 +3027,11 @@
   $("logout").onclick = logout; $("logout2").onclick = logout;
 
   /* ── 侧栏品牌（10-23）：名字跟部署走（客户机 PPcode / 主站 Codex Harness）。
-     ⛔ 只取公开的 /api/brand；取不到就保留页面里的默认文案，不弹错、不阻塞其它加载。 */
+     ⛔ 只取公开的 /api/brand；取不到就保留页面里的默认文案，不弹错、不阻塞其它加载。
+     ⛔ 路径必须是 /api/brand：api() 会拼上 "/cloud-api" 前缀，写成 "/brand" 会 404
+        （后端路由是 p === "/api/brand"），于是永远落回 HTML 里的默认文案。
+        与 index.html 保持一致：/cloud-api/api/brand。 */
+
   api("/api/brand").then(function (r) {
     var j = (r && r.j) || {};
     if (!r.ok || !j.ok || !j.name) return;
