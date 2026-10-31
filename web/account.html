@@ -97,6 +97,7 @@
   .mark > img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: contain; background: var(--card); }
   /* 品牌名**不换行**：侧栏 232px 里 "Codex Assistant" 会折成两行、把 logo 挤歪（实拍确认）；过长截断，不压右侧主题开关。 */
   .brand > #brandName { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .brand > #brandName:empty::before { content: "…"; color: var(--muted); }
   .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; color: var(--text); font-size: 13.5px; font-weight: 500; border: 0; background: transparent; width: 100%; text-align: left; }
   .nav-item:hover { background: var(--field); text-decoration: none; }
   .nav-item.on { background: var(--brand-soft); color: var(--brand-ink); font-weight: 600; }
@@ -571,6 +572,50 @@
   .pf-hero-art img { position: relative; width: 104px; height: 104px; border-radius: 25px;
     box-shadow: 0 18px 40px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.09); }
 
+  /* ⛔ 10-31 用户令：「大卡片根据 logo 定制一个」——
+     hero 的配色跟着**图标那一支颜色**走（CH = 蓝、PP = 紫），只覆盖颜色，
+     布局/结构一律不动。JS 只切 `.pf-hero[data-brand]` 一个属性。
+     ⛔ 默认（无 data-brand 或 pp）沿用上面的紫色，保证旧行为不变。 */
+  .pf-hero[data-brand="ch"] {
+    border-color: #1d3358;
+    background:
+      radial-gradient(900px 380px at 8% -12%, #12335f 0%, transparent 62%),
+      radial-gradient(720px 340px at 92% 4%, #2563eb 0%, transparent 58%),
+      linear-gradient(158deg, #0c1526 0%, #080e1a 58%, #060a13 100%);
+    box-shadow: 0 20px 50px rgba(8, 26, 64, .34);
+  }
+  .pf-hero[data-brand="ch"] .pf-title em {
+    background: linear-gradient(96deg, #ffffff 8%, #bcd4ff 52%, #5b8cff 94%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .pf-hero[data-brand="ch"] .pf-eyebrow {
+    border-color: rgba(91,140,255,.34); background: rgba(91,140,255,.13); color: #d3e2ff;
+  }
+  .pf-hero[data-brand="ch"] .pf-btn-main {
+    background: linear-gradient(135deg, #4f8dff, #1d4ed8);
+    box-shadow: 0 10px 24px rgba(29,78,216,.42);
+  }
+  .pf-hero[data-brand="ch"] .pf-hero-art::before {
+    background: radial-gradient(circle, rgba(91,140,255,.62), transparent 68%);
+  }
+  .pf-hero[data-brand="ch"] .pf-sub { color: #a9b8d4; }
+  .pf-hero[data-brand="ch"] .pf-hero-meta { color: #7d8aa6; }
+  .pf-hero[data-brand="ch"] .pf-hero-meta b { color: #cdd9ee; }
+  .pf-hero[data-brand="ch"]::after {
+    background-image:
+      linear-gradient(rgba(160,200,255,.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(160,200,255,.06) 1px, transparent 1px);
+  }
+  /* 产品区（下载卡/版本徽标）也跟随品牌色：⛔ 只覆盖这几个组件，
+     不动全站 --brand（侧栏/表格用同一支变量，整体换色会牵扯一大片对比度）。 */
+  .pf[data-brand="ch"] .pf-os-btn.primary {
+    background: linear-gradient(135deg, #4f8dff, #1d4ed8);
+    box-shadow: 0 6px 16px rgba(29,78,216,.32);
+  }
+  .pf[data-brand="ch"] .pf-os.rec { border-color: color-mix(in srgb, #2563eb 42%, var(--line)); }
+  .pf[data-brand="ch"] .pf-ver { color: #1d4ed8; background: #e8efff; }
+  .pf[data-brand="ch"] .pf-head h2 { color: var(--text); }
+
   /* ── 通用面板（下载 / 特色 / 日志共用）─────────────────────────────── */
   .pf-panel { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 20px 22px; box-shadow: var(--shadow); }
   .pf-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -582,7 +627,14 @@
   .pf-note b { color: var(--text); font-weight: 600; }
 
   /* ── 三平台下载卡 ──────────────────────────────────────────────────── */
-  .pf-os-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(238px, 1fr)); gap: 12px; }
+  /* ⛔ 10-31 用户反馈：「下载两边三个卡片的怎么缩短了，没有自适应铺满」——
+     `auto-fit + minmax(238px, 1fr)` 在 ~1230px 容器里会算出 5 条轨道、只有 3 项 ⇒
+     前三条各占 1/5，右侧留出两条空轨道（截图里那一大片白）。
+     ⇒ 桌面端**固定三列等分**（每张卡都铺满 1/3），窄屏再降到两列/一列。
+     第 4 张 Android 卡用 `grid-column: 1 / -1` 横跨整行，不受影响。 */
+  .pf-os-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 1080px) { .pf-os-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 700px) { .pf-os-grid { grid-template-columns: minmax(0, 1fr); } }
   /* 10-31 新增的「Android 手机端」卡（第 4 张）：桌面三平台是三列，第 4 张挤进同一行会窄得放不下
      （mac 的首次启动提示要换好几行），单独一行又只剩 1/3 宽、右边一大片空。
      ⇒ 让它**横跨整行**做成横条：左边图标+版本，右边按钮，说明文字占第二行。 */
@@ -745,7 +797,7 @@
   <aside class="side">
     <!-- 10-18 主题开关：嵌在侧栏品牌行内（用户令：不要悬浮，放进侧边栏） -->
     <div class="brand">
-      <span class="mark">CA<img src="/cloud-api/api/favicon?size=256" alt="" /></span><span id="brandName">PPcode</span>
+      <span class="mark">CA<img src="/cloud-api/api/favicon?size=256" alt="" /></span><span id="brandName"></span>
       <label for="themeSwitch" title="切换白天 / 夜间主题" class="brand-theme">
         <input type="checkbox" id="themeSwitch" aria-label="切换白天/夜间主题" />
       </label>
@@ -805,7 +857,7 @@
           <div class="pf-hero-in">
             <div>
               <span class="pf-eyebrow" id="prodBadge"><i class="dot"></i>正在检查最新版本…</span>
-              <h1 class="pf-title">为深度使用而生的<br /><em>AI 编码工作台</em></h1>
+              <h1 class="pf-title" id="prodTitle">把 Codex 引擎<br /><em>留在你自己的机器上</em></h1>
               <p class="pf-sub" id="prodSub">把 Codex 引擎、多会话、专家团、技能与记忆整合成一个本地优先的桌面环境 ——
                 你的代码与会话始终留在自己机器上。</p>
               <div class="pf-cta">
@@ -2976,7 +3028,7 @@
 
   /* ── 侧栏品牌（10-23）：名字跟部署走（客户机 PPcode / 主站 Codex Harness）。
      ⛔ 只取公开的 /api/brand；取不到就保留页面里的默认文案，不弹错、不阻塞其它加载。 */
-  api("/brand").then(function (r) {
+  api("/api/brand").then(function (r) {
     var j = (r && r.j) || {};
     if (!r.ok || !j.ok || !j.name) return;
     if ($("brandName")) $("brandName").textContent = j.name;
@@ -3052,6 +3104,25 @@
       if ($("prodName")) $("prodName").textContent = pr.name || "客户端";
       if ($("prodSub") && pr.sub) $("prodSub").textContent = pr.sub;
       if ($("prodDesc") && pr.desc) $("prodDesc").textContent = pr.desc;
+      /* ⛔ 10-31 用户令：「大卡片根据 logo 定制」+「宣传文字太 low」——
+         hero 的主标题与配色按**产品身份**分流（不再是同一句空口号套在两个产品上）：
+           · Codex Harness ⇒ 蓝色系（跟 CH 图标同一支蓝），讲"留在本机"；
+           · PPcode        ⇒ 紫色系（跟 PP 图标同一支紫），讲"装完就能干活"。
+         ⛔ 依赖 /product/home 的 product.name，它是服务端**按部署仓库**判定的（不再写死 PPcode）。 */
+      (function () {
+        var isPP = /ppcode/i.test(String(pr.name || ""));
+        var hero = document.querySelector(".pf-hero");
+        if (hero) hero.setAttribute("data-brand", isPP ? "pp" : "ch");
+        /* 产品区（下载卡/版本徽标）也挂同一个品牌标记 —— 主按钮与徽标才跟 hero 同色 */
+        var pf = document.querySelector(".pf");
+        if (pf) pf.setAttribute("data-brand", isPP ? "pp" : "ch");
+        var t = $("prodTitle");
+        if (t) {
+          t.innerHTML = isPP
+            ? '完整 Codex 内核<br /><em>开箱即用的编码工作台</em>'
+            : '把 Codex 引擎<br /><em>留在你自己的机器上</em>';
+        }
+      })();
       try { document.title = (pr.name || "客户端") + " · 产品首页 · 控制台"; } catch (e) { /* 忽略 */ }
       var rel = j.latest || {}, d = rel.downloads || {};
       var m0 = (j.mirrors || [])[0] || { prefix: "", name: "国内镜像" };
